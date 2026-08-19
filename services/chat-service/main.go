@@ -122,6 +122,11 @@ func identity(r *http.Request) (userID, userName, role string, err error) {
 }
 
 func (a *app) messages(w http.ResponseWriter, r *http.Request) {
+	if _, _, _, err := identity(r); err != nil {
+		httpx.JSON(w, 401, map[string]string{"error": err.Error()})
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		limit := 100
