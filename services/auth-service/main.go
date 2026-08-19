@@ -19,10 +19,11 @@ type app struct {
 }
 
 type user struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+	Active bool   `json:"active"`
 }
 
 func main() {
@@ -41,7 +42,9 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "auth-service"}) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "auth-service"})
+	})
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/users", a.users)
@@ -57,9 +60,16 @@ func (a *app) migrate() error {
 		email VARCHAR(190) NOT NULL UNIQUE,
 		password_hash VARCHAR(255) NOT NULL,
 		role VARCHAR(30) NOT NULL DEFAULT 'staff',
+		active BOOLEAN NOT NULL DEFAULT TRUE,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Existing local databases from Phase 2 do not yet have the active flag.
+	// Duplicate-column errors are intentionally ignored so this remains restart-safe.
+	_, _ = a.db.Exec(`ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE`)
+	return nil
 }
 
 func (a *app) bootstrapAdmin() error {
@@ -73,7 +83,7 @@ func (a *app) bootstrapAdmin() error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)", "Tropical Admin", email, string(hash), "admin")
+	_, err = a.db.Exec("INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,TRUE)", "Tropical Admin", email, string(hash), "admin")
 	return err
 }
 
@@ -89,8 +99,8 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var u user
 	var hash string
-	if err := a.db.QueryRow("SELECT id,name,email,password_hash,role FROM users WHERE email=?", strings.ToLower(strings.TrimSpace(input.Email))).Scan(&u.ID, &u.Name, &u.Email, &hash, &u.Role); err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+	if err := a.db.QueryRow("SELECT id,name,email,password_hash,role,active FROM users WHERE email=?", strings.ToLower(strings.TrimSpace(input.Email))).Scan(&u.ID, &u.Name, &u.Email, &hash, &u.Role, &u.Active); err != nil || !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials or inactive user"})
 		return
 	}
 	now := time.Now()
@@ -129,15 +139,20 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, claims)
 }
 
+func validRole(role string) bool {
+	return role == "admin" || role == "auditor" || role == "staff"
+}
+
 func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
 	if err != nil || claims["role"] != "admin" {
 		httpx.JSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
 		return
 	}
+
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query("SELECT id,name,email,role FROM users ORDER BY id DESC")
+		rows, err := a.db.Query("SELECT id,name,email,role,active FROM users ORDER BY id DESC")
 		if err != nil {
 			httpx.JSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -146,30 +161,78 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 		result := []user{}
 		for rows.Next() {
 			var u user
-			if rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role) == nil {
+			if rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active) == nil {
 				result = append(result, u)
 			}
 		}
 		httpx.JSON(w, 200, result)
+
 	case http.MethodPost:
 		var input struct{ Name, Email, Password, Role string }
 		if err := httpx.DecodeJSON(r, &input); err != nil {
 			httpx.JSON(w, 400, map[string]string{"error": "invalid json"})
 			return
 		}
-		role := strings.ToLower(input.Role)
-		if role != "admin" && role != "auditor" && role != "staff" {
-			httpx.JSON(w, 400, map[string]string{"error": "role must be admin, auditor, or staff"})
+		role := strings.ToLower(strings.TrimSpace(input.Role))
+		if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Email) == "" || len(input.Password) < 8 || !validRole(role) {
+			httpx.JSON(w, 400, map[string]string{"error": "name/email required, password min 8 chars, and role must be admin/auditor/staff"})
 			return
 		}
-		hash, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-		res, err := a.db.Exec("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)", input.Name, strings.ToLower(input.Email), string(hash), role)
+		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		if err != nil {
+			httpx.JSON(w, 500, map[string]string{"error": "password hashing failed"})
+			return
+		}
+		email := strings.ToLower(strings.TrimSpace(input.Email))
+		res, err := a.db.Exec("INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,TRUE)", strings.TrimSpace(input.Name), email, string(hash), role)
 		if err != nil {
 			httpx.JSON(w, 409, map[string]string{"error": "user already exists or invalid"})
 			return
 		}
 		id, _ := res.LastInsertId()
-		httpx.JSON(w, 201, user{ID: id, Name: input.Name, Email: strings.ToLower(input.Email), Role: role})
+		httpx.JSON(w, 201, user{ID: id, Name: strings.TrimSpace(input.Name), Email: email, Role: role, Active: true})
+
+	case http.MethodPatch:
+		var input struct {
+			ID       int64  `json:"id"`
+			Name     string `json:"name"`
+			Role     string `json:"role"`
+			Active   bool   `json:"active"`
+			Password string `json:"password"`
+		}
+		if err := httpx.DecodeJSON(r, &input); err != nil || input.ID == 0 {
+			httpx.JSON(w, 400, map[string]string{"error": "id and valid json required"})
+			return
+		}
+		role := strings.ToLower(strings.TrimSpace(input.Role))
+		if strings.TrimSpace(input.Name) == "" || !validRole(role) {
+			httpx.JSON(w, 400, map[string]string{"error": "name and valid role required"})
+			return
+		}
+		if input.Password != "" && len(input.Password) < 8 {
+			httpx.JSON(w, 400, map[string]string{"error": "new password must be at least 8 characters"})
+			return
+		}
+		if input.Password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+			if err != nil {
+				httpx.JSON(w, 500, map[string]string{"error": "password hashing failed"})
+				return
+			}
+			_, err = a.db.Exec("UPDATE users SET name=?,role=?,active=?,password_hash=? WHERE id=?", strings.TrimSpace(input.Name), role, input.Active, string(hash), input.ID)
+			if err != nil {
+				httpx.JSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		} else {
+			_, err = a.db.Exec("UPDATE users SET name=?,role=?,active=? WHERE id=?", strings.TrimSpace(input.Name), role, input.Active, input.ID)
+			if err != nil {
+				httpx.JSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		httpx.JSON(w, 200, map[string]any{"id": input.ID, "name": strings.TrimSpace(input.Name), "role": role, "active": input.Active})
+
 	default:
 		httpx.JSON(w, 405, map[string]string{"error": "method not allowed"})
 	}
