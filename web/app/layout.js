@@ -1,6 +1,9 @@
 import "./globals.css";
+import "./typography.css";
 import Nav from "../components/Nav";
 import PwaRegister from "../components/PwaRegister";
+import SessionGate from "../components/SessionGate";
+import TropicalAtmosphere from "../components/TropicalAtmosphere";
 
 export const metadata = {
   title: "Tropical Management",
@@ -14,8 +17,11 @@ export default function RootLayout({ children }) {
       <body>
         <PwaRegister />
         <div className="tropical-shell">
+          <TropicalAtmosphere />
           <Nav />
-          {children}
+          <SessionGate>
+            <div className="relative z-10">{children}</div>
+          </SessionGate>
         </div>
       </body>
     </html>

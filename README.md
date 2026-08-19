@@ -1,15 +1,16 @@
 # Tropical Management V1
 
-Enterprise restaurant management and internal audit platform with a tropical green/gold visual identity.
+Enterprise restaurant management and internal audit platform with a luxury tropical green/gold visual identity.
 
 ## Architecture
 
 This repository is an **application monorepo** containing independently deployable microservices:
 
 - `auth-service` — login, JWT, users, Admin/Auditor/Staff RBAC
-- `audit-service` — audit checklist and issue tracker
-- `inventory-service` — stock, reorder alerts, suppliers
+- `audit-service` — audit checklist, findings, corrective-action workflow
+- `inventory-service` — stock, reorder alerts, suppliers, movement ledger
 - `sales-service` — sales entries and daily summary
+- `chat-service` — persistent general room + real-time SSE delivery
 - `dashboard-service` — cross-service metric aggregation
 - `api-gateway` — single client entry point and role authorization
 - `web` — Next.js PWA frontend
@@ -33,17 +34,33 @@ Open `http://localhost:3000` and login with the local bootstrap account:
 
 These credentials are **local development defaults only**. Production secrets must be injected through Vault.
 
-Useful endpoints:
+### Host entry points
 
 ```text
 Frontend       http://localhost:3000
 API Gateway    http://localhost:8080
-Auth           http://localhost:8081
-Audit          http://localhost:8082
-Inventory      http://localhost:8083
-Sales          http://localhost:8084
-Dashboard      http://localhost:8085
-MySQL          localhost:3306
 ```
 
-See `docs/` for architecture, local development, API behavior, and Jenkins/Argo CD flow.
+Backend microservices and MySQL are intentionally internal to the Compose network. They communicate via service DNS names such as `auth-service:8080`, `chat-service:8080`, and `mysql:3306`.
+
+## Phase 3 functional hardening
+
+Phase 3 adds:
+
+- issue due dates, PIC, corrective actions, and status workflow
+- supplier UI and inventory stock-movement ledger
+- user role editing and activate/deactivate controls
+- route protection and logout
+- operational dashboard analytics
+- bolder premium typography and luxury tropical UI with lightweight animated botanical leaves
+- **General Live Chat** for all authenticated roles, with persistent history, real-time updates, trusted user/role identity, and per-user name accent colors
+- validation unit tests for role, issue workflow, and chat message rules
+
+See `docs/phase3-functional-hardening.md` and `docs/live-chat.md` for acceptance testing.
+
+## Delivery repositories
+
+- application source: `tropical-management-v1`
+- Kubernetes desired state: `tropical-management-gitops`
+
+See `docs/` for architecture, local development, API behavior, Jenkins/Argo CD flow, and Phase-3 acceptance testing.

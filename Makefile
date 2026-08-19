@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-SERVICES := auth-service audit-service inventory-service sales-service dashboard-service api-gateway
+SERVICES := auth-service audit-service inventory-service sales-service chat-service dashboard-service api-gateway
 
 .PHONY: test fmt vet web-install web-build compose-up compose-down
 
