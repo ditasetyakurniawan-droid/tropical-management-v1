@@ -1,0 +1,7 @@
+package main
+
+import("encoding/json";"log";"net/http";"time";"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx")
+type client struct{http *http.Client;sales,audit,inventory string}
+func main(){c:=&client{http:&http.Client{Timeout:3*time.Second},sales:httpx.Env("SALES_SERVICE_URL","http://sales-service:8080"),audit:httpx.Env("AUDIT_SERVICE_URL","http://audit-service:8080"),inventory:httpx.Env("INVENTORY_SERVICE_URL","http://inventory-service:8080")};mux:=http.NewServeMux();mux.HandleFunc("/healthz",func(w http.ResponseWriter,_ *http.Request){httpx.JSON(w,200,map[string]string{"status":"ok","service":"dashboard-service"})});mux.HandleFunc("/api/dashboard",c.dashboard);log.Println("dashboard-service listening on :8080");log.Fatal(http.ListenAndServe(":8080",mux))}
+func(c *client)get(url string)map[string]any{resp,err:=c.http.Get(url);if err!=nil{return map[string]any{"error":err.Error()}};defer resp.Body.Close();var out map[string]any;if json.NewDecoder(resp.Body).Decode(&out)!=nil{return map[string]any{"error":"invalid upstream response"}};return out}
+func(c *client)dashboard(w http.ResponseWriter,_ *http.Request){sales:=c.get(c.sales+"/internal/summary");audit:=c.get(c.audit+"/internal/summary");inventory:=c.get(c.inventory+"/internal/summary");out:=map[string]any{"sales_today":sales["sales_today"],"orders_today":sales["orders_today"],"audit_score":audit["audit_score"],"open_issues":audit["open_issues"],"inventory_alerts":inventory["inventory_alerts"],"total_items":inventory["total_items"]};httpx.JSON(w,200,out)}
