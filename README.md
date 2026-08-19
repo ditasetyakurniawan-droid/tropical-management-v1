@@ -1,66 +1,159 @@
 # Tropical Management V1
 
-Enterprise restaurant management and internal audit platform with a luxury tropical green/gold visual identity.
+**Tropical Management** is a restaurant operations and internal-audit platform built as independently deployable Go microservices with a Next.js PWA frontend. The current product milestone includes functional hardening, a luxury tropical UI, and General Live Chat.
 
-## Architecture
+## Current architecture
 
-This repository is an **application monorepo** containing independently deployable microservices:
+```text
+Browser / PWA
+      |
+      v
+Next.js Web :3000
+      |
+      v
+API Gateway :8080
+      |
+      +-- auth-service
+      +-- audit-service
+      +-- inventory-service
+      +-- sales-service
+      +-- dashboard-service
+      +-- chat-service
+             |
+             +-- persistent history
+             +-- real-time SSE
 
-- `auth-service` — login, JWT, users, Admin/Auditor/Staff RBAC
-- `audit-service` — audit checklist, findings, corrective-action workflow
-- `inventory-service` — stock, reorder alerts, suppliers, movement ledger
-- `sales-service` — sales entries and daily summary
-- `chat-service` — persistent general room + real-time SSE delivery
-- `dashboard-service` — cross-service metric aggregation
-- `api-gateway` — single client entry point and role authorization
-- `web` — Next.js PWA frontend
+Backend services -> MySQL
+```
 
-Production delivery is designed for **Jenkins CI -> Harbor -> GitOps repository -> Argo CD -> Kubernetes**. Jenkins does not need to run `kubectl apply` against production.
+A microservice is defined here by independent runtime/API/data/deployment boundaries. The application stays in one source monorepo until independent team ownership or release cadence justifies splitting repositories.
+
+## Implemented modules
+
+- Interactive dashboard: Sales, Audit Score, Open Findings, Inventory Alerts
+- Internal Audit: checklist, score, finding workflow, PIC, due date, corrective action
+- Inventory: stock, reorder alerts, suppliers, stock movement ledger
+- Sales: operational daily sales entries
+- Users/RBAC: Admin, Auditor, Staff; role editing and activate/deactivate
+- General Live Chat: authenticated users, role badges, per-user accent colors, persistent messages, real-time SSE
+- Responsive luxury tropical UI/PWA foundation
 
 ## Run locally
 
-Prerequisite: Docker with Compose v2.
+Prerequisite: Docker + Docker Compose v2.
 
 ```bash
 git clone https://github.com/ditasetyakurniawan-droid/tropical-management-v1.git
 cd tropical-management-v1
-docker compose up --build
+docker compose up -d --build
+docker compose ps
+curl -fsS http://localhost:8080/healthz
 ```
 
-Open `http://localhost:3000` and login with the local bootstrap account:
-
-- email: `admin@tropical.local`
-- password: `ChangeThis123!`
-
-These credentials are **local development defaults only**. Production secrets must be injected through Vault.
-
-### Host entry points
+Open:
 
 ```text
-Frontend       http://localhost:3000
-API Gateway    http://localhost:8080
+Web        http://localhost:3000
+Live Chat  http://localhost:3000/chat
+API        http://localhost:8080
 ```
 
-Backend microservices and MySQL are intentionally internal to the Compose network. They communicate via service DNS names such as `auth-service:8080`, `chat-service:8080`, and `mysql:3306`.
+Development-only bootstrap account:
 
-## Phase 3 functional hardening
+```text
+admin@tropical.local
+ChangeThis123!
+```
 
-Phase 3 adds:
+Do not reuse local development credentials in production.
 
-- issue due dates, PIC, corrective actions, and status workflow
-- supplier UI and inventory stock-movement ledger
-- user role editing and activate/deactivate controls
-- route protection and logout
-- operational dashboard analytics
-- bolder premium typography and luxury tropical UI with lightweight animated botanical leaves
-- **General Live Chat** for all authenticated roles, with persistent history, real-time updates, trusted user/role identity, and per-user name accent colors
-- validation unit tests for role, issue workflow, and chat message rules
+## Service catalog
 
-See `docs/phase3-functional-hardening.md` and `docs/live-chat.md` for acceptance testing.
+| Runtime | Responsibility |
+|---|---|
+| `auth-service` | Login, JWT, users, RBAC |
+| `audit-service` | Audit checklist, findings, corrective-action workflow |
+| `inventory-service` | Items, suppliers, stock, stock movements |
+| `sales-service` | Daily operational sales |
+| `dashboard-service` | Cross-service HTTP aggregation |
+| `chat-service` | General room, MySQL history, SSE real-time delivery |
+| `api-gateway` | Single API entry point, JWT validation, RBAC, reverse proxy |
+| `web` | Next.js PWA frontend |
 
-## Delivery repositories
+## Developer documentation
 
-- application source: `tropical-management-v1`
-- Kubernetes desired state: `tropical-management-gitops`
+Start here when continuing development:
 
-See `docs/` for architecture, local development, API behavior, Jenkins/Argo CD flow, and Phase-3 acceptance testing.
+- [`docs/DEVELOPMENT-NOTES.md`](docs/DEVELOPMENT-NOTES.md) - short daily cheat sheet
+- [`docs/DEVELOPER-GUIDE.md`](docs/DEVELOPER-GUIDE.md) - complete development handbook and current project documentation
+- [`docs/architecture.md`](docs/architecture.md) - architecture boundaries
+- [`docs/api.md`](docs/api.md) - API surface
+- [`docs/live-chat.md`](docs/live-chat.md) - General Live Chat design and acceptance
+- [`docs/local-development.md`](docs/local-development.md) - local Docker workflow
+- [`docs/cicd-gitops.md`](docs/cicd-gitops.md) - Jenkins/GitOps direction
+- [`docs/phase3-functional-hardening.md`](docs/phase3-functional-hardening.md) - Phase 3 acceptance notes
+
+## Development commands
+
+```bash
+# Backend
+go test ./...
+go vet ./...
+
+# Frontend
+cd web && npm install && npm run build
+
+# Rebuild one backend service
+docker compose build audit-service && docker compose up -d audit-service
+
+# Rebuild frontend
+docker compose build web && docker compose up -d web
+
+# Logs
+docker compose logs -f api-gateway
+```
+
+Backend service ports are intentionally not published to the host. Test internal health through the Compose network when necessary.
+
+## Repository split
+
+- `tropical-management-v1` - application code, Docker build definitions, tests, Jenkins pipeline
+- `tropical-management-gitops` - Kubernetes desired state, Kustomize overlays, Argo CD definitions
+
+Production delivery target:
+
+```text
+GitHub -> Jenkins -> Harbor -> GitOps commit -> Argo CD -> Kubernetes
+```
+
+Jenkins should not directly apply production manifests.
+
+## Database target
+
+Production MySQL is external. Target database ownership:
+
+```text
+auth-service       -> tropical_auth
+audit-service      -> tropical_audit
+inventory-service  -> tropical_inventory
+sales-service      -> tropical_sales
+chat-service       -> tropical_chat
+```
+
+Production credentials must be scoped per service and injected from Vault.
+
+## Important Live Chat scaling note
+
+The current SSE broker is in-memory. Message history is persisted in MySQL, but live fan-out between multiple chat-service replicas requires shared pub/sub such as Redis or NATS. Until that hardening is implemented, deploy `chat-service` with one replica.
+
+## Next technical milestone
+
+1. Add `*_FILE` secret support to Go services.
+2. Inject DB/JWT secrets from Vault.
+3. Push immutable service images to Harbor from Jenkins.
+4. Automate Jenkins updates to the GitOps repository.
+5. Add real Kubernetes Deployment/Service manifests.
+6. Configure Argo CD reconciliation.
+7. Add Ingress, SSE proxy settings, NetworkPolicy, HPA/PDB, and observability.
+
+See [`docs/DEVELOPER-GUIDE.md`](docs/DEVELOPER-GUIDE.md) for the full roadmap and implementation rules.
