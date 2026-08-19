@@ -5,9 +5,7 @@ services:
       MYSQL_ROOT_PASSWORD: local-root-only
       MYSQL_USER: tropical
       MYSQL_PASSWORD: tropical
-    # MySQL is intentionally not published to the host.
-    # All application services reach it through the Compose network at mysql:3306.
-    # This avoids collisions with an existing local MySQL/MariaDB instance on host port 3306.
+    # Internal-only database. Application services reach mysql:3306 via Compose DNS.
     expose: ["3306"]
     volumes:
       - mysql-data:/var/lib/mysql
@@ -26,25 +24,25 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: admin@tropical.local
       BOOTSTRAP_ADMIN_PASSWORD: ChangeThis123!
     depends_on: {mysql: {condition: service_healthy}}
-    ports: ["8081:8080"]
+    expose: ["8080"]
 
   audit-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: audit-service}}
     environment: {AUDIT_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_audit?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
-    ports: ["8082:8080"]
+    expose: ["8080"]
 
   inventory-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: inventory-service}}
     environment: {INVENTORY_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_inventory?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
-    ports: ["8083:8080"]
+    expose: ["8080"]
 
   sales-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: sales-service}}
     environment: {SALES_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_sales?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
-    ports: ["8084:8080"]
+    expose: ["8080"]
 
   dashboard-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: dashboard-service}}
@@ -53,7 +51,7 @@ services:
       AUDIT_SERVICE_URL: http://audit-service:8080
       INVENTORY_SERVICE_URL: http://inventory-service:8080
     depends_on: [sales-service, audit-service, inventory-service]
-    ports: ["8085:8080"]
+    expose: ["8080"]
 
   api-gateway:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: api-gateway}}
