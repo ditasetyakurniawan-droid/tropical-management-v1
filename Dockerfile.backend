@@ -2,8 +2,12 @@
 FROM golang:1.23-alpine AS build
 WORKDIR /src
 ARG SERVICE
-COPY go.mod ./
-RUN go mod download
+
+# Copy both module manifest and checksums first so dependency downloads are reproducible
+# and Docker can cache this layer until dependencies change.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
 COPY internal ./internal
 COPY services ./services
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/app ./services/${SERVICE}
