@@ -5,7 +5,10 @@ services:
       MYSQL_ROOT_PASSWORD: local-root-only
       MYSQL_USER: tropical
       MYSQL_PASSWORD: tropical
-    ports: ["3306:3306"]
+    # MySQL is intentionally not published to the host.
+    # All application services reach it through the Compose network at mysql:3306.
+    # This avoids collisions with an existing local MySQL/MariaDB instance on host port 3306.
+    expose: ["3306"]
     volumes:
       - mysql-data:/var/lib/mysql
       - ./mysql/init:/docker-entrypoint-initdb.d:ro
