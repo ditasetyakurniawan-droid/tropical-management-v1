@@ -27,7 +27,7 @@ pipeline {
       when { branch 'main' }
       steps {
         script {
-          def services = ['auth-service','audit-service','inventory-service','sales-service','dashboard-service','api-gateway']
+          def services = ['auth-service','audit-service','inventory-service','sales-service','chat-service','dashboard-service','api-gateway']
           services.each { svc ->
             sh "docker build -f Dockerfile.backend --build-arg SERVICE=${svc} -t ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${IMAGE_TAG} ."
           }
@@ -42,7 +42,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS')]) {
           sh 'echo "$HARBOR_PASS" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_USER" --password-stdin'
           script {
-            def services = ['auth-service','audit-service','inventory-service','sales-service','dashboard-service','api-gateway','web']
+            def services = ['auth-service','audit-service','inventory-service','sales-service','chat-service','dashboard-service','api-gateway','web']
             services.each { svc -> sh "docker push ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${IMAGE_TAG}" }
           }
         }

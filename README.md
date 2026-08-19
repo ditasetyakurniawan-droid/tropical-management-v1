@@ -10,6 +10,7 @@ This repository is an **application monorepo** containing independently deployab
 - `audit-service` — audit checklist, findings, corrective-action workflow
 - `inventory-service` — stock, reorder alerts, suppliers, movement ledger
 - `sales-service` — sales entries and daily summary
+- `chat-service` — persistent general room + real-time SSE delivery
 - `dashboard-service` — cross-service metric aggregation
 - `api-gateway` — single client entry point and role authorization
 - `web` — Next.js PWA frontend
@@ -40,7 +41,7 @@ Frontend       http://localhost:3000
 API Gateway    http://localhost:8080
 ```
 
-Backend microservices and MySQL are intentionally internal to the Compose network. They communicate via service DNS names such as `auth-service:8080` and `mysql:3306`; ports 8081–8085 and 3306 are not required on the host.
+Backend microservices and MySQL are intentionally internal to the Compose network. They communicate via service DNS names such as `auth-service:8080`, `chat-service:8080`, and `mysql:3306`.
 
 ## Phase 3 functional hardening
 
@@ -51,10 +52,11 @@ Phase 3 adds:
 - user role editing and activate/deactivate controls
 - route protection and logout
 - operational dashboard analytics
-- luxury tropical UI with lightweight animated botanical leaves
-- validation unit tests for role and issue workflow rules
+- bolder premium typography and luxury tropical UI with lightweight animated botanical leaves
+- **General Live Chat** for all authenticated roles, with persistent history, real-time updates, trusted user/role identity, and per-user name accent colors
+- validation unit tests for role, issue workflow, and chat message rules
 
-See `docs/phase3-functional-hardening.md` for acceptance testing.
+See `docs/phase3-functional-hardening.md` and `docs/live-chat.md` for acceptance testing.
 
 ## Delivery repositories
 

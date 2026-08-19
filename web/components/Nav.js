@@ -9,6 +9,7 @@ const links = [
   ["/audits", "Audit"],
   ["/inventory", "Inventory"],
   ["/sales", "Sales"],
+  ["/chat", "Live Chat"],
   ["/users", "Users"],
 ];
 
@@ -43,11 +44,7 @@ export default function Nav() {
 
         <nav className="nav-scroll ml-auto flex items-center gap-1 overflow-x-auto text-sm font-semibold">
           {links.map(([href, label]) => (
-            <Link
-              key={href}
-              href={href}
-              className={`luxury-nav-link ${pathname === href ? "active" : ""}`}
-            >
+            <Link key={href} href={href} className={`luxury-nav-link ${pathname === href ? "active" : ""}`}>
               {label}
             </Link>
           ))}
@@ -55,8 +52,8 @@ export default function Nav() {
 
         <div className="hidden items-center gap-3 border-l border-emerald-950/10 pl-4 md:flex">
           <div className="text-right leading-tight">
-            <p className="text-xs font-black text-emerald-950">{user?.name || "Tropical User"}</p>
-            <p className="text-[10px] font-bold uppercase tracking-[.18em] text-amber-600">{user?.role || "session"}</p>
+            <p className="text-sm font-black text-emerald-950">{user?.name || "Tropical User"}</p>
+            <p className="text-[11px] font-black uppercase tracking-[.16em] text-amber-600">{user?.role || "session"}</p>
           </div>
           <button onClick={logout} className="logout-button" type="button">Logout</button>
         </div>

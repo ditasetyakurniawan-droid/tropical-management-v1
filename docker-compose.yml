@@ -44,6 +44,15 @@ services:
     depends_on: {mysql: {condition: service_healthy}}
     expose: ["8080"]
 
+  chat-service:
+    build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: chat-service}}
+    environment:
+      # Existing local volumes already contain tropical_auth, so chat can start without deleting local data.
+      # Production should override this through Vault with a dedicated tropical_chat database/user.
+      CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4
+    depends_on: {mysql: {condition: service_healthy}}
+    expose: ["8080"]
+
   dashboard-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: dashboard-service}}
     environment:
@@ -63,7 +72,8 @@ services:
       INVENTORY_SERVICE_URL: http://inventory-service:8080
       SALES_SERVICE_URL: http://sales-service:8080
       DASHBOARD_SERVICE_URL: http://dashboard-service:8080
-    depends_on: [auth-service, audit-service, inventory-service, sales-service, dashboard-service]
+      CHAT_SERVICE_URL: http://chat-service:8080
+    depends_on: [auth-service, audit-service, inventory-service, sales-service, dashboard-service, chat-service]
     ports: ["8080:8080"]
 
   web:

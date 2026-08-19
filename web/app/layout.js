@@ -1,4 +1,5 @@
 import "./globals.css";
+import "./typography.css";
 import Nav from "../components/Nav";
 import PwaRegister from "../components/PwaRegister";
 import SessionGate from "../components/SessionGate";
