@@ -111,21 +111,47 @@ export default function Audits() {
 function FindingRow({ issue, onUpdate }) {
   const [draft, setDraft] = useState(issue);
   useEffect(() => setDraft(issue), [issue]);
+
   return (
-    <div className="p-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2"><span className={`status-pill severity-${issue.severity}`}>{issue.severity}</span><span className={`status-pill status-${issue.status}`}>{issue.status.replace("_", " ")}</span>{issue.audit_id > 0 && <span className="text-[10px] font-black text-slate-400">AUDIT #{issue.audit_id}</span>}</div>
-          <h3 className="mt-3 text-lg font-black text-emerald-950">{issue.title}</h3>
+    <article className="p-5 md:p-6">
+      {/* Header is deliberately isolated from editable controls so badges can never overlap inputs/selects. */}
+      <header className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`status-pill severity-${issue.severity}`}>{issue.severity}</span>
+          <span className={`status-pill status-${issue.status}`}>{issue.status.replace("_", " ")}</span>
+          {issue.audit_id > 0 && <span className="text-[10px] font-black tracking-wide text-slate-400">AUDIT #{issue.audit_id}</span>}
         </div>
-        <select className="input lg:w-40" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>{statuses.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}</select>
+        <h3 className="mt-3 break-words text-lg font-black leading-snug text-emerald-950">{issue.title || "Untitled finding"}</h3>
+      </header>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[180px_minmax(0,1fr)_180px]">
+        <label className="block min-w-0 text-[10px] font-black uppercase tracking-[.12em] text-slate-400">
+          Workflow status
+          <select className="input mt-2 block w-full" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>
+            {statuses.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+          </select>
+        </label>
+
+        <label className="block min-w-0 text-[10px] font-black uppercase tracking-[.12em] text-slate-400">
+          Assigned PIC
+          <input className="input mt-2 block w-full" placeholder="Person in charge" value={draft.assigned_to || ""} onChange={(e) => setDraft({ ...draft, assigned_to: e.target.value })} />
+        </label>
+
+        <label className="block min-w-0 text-[10px] font-black uppercase tracking-[.12em] text-slate-400 md:col-span-2 xl:col-span-1">
+          Due date
+          <input className="input mt-2 block w-full" type="date" value={draft.due_date || ""} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} />
+        </label>
       </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_170px]">
-        <input className="input" placeholder="Assigned PIC" value={draft.assigned_to || ""} onChange={(e) => setDraft({ ...draft, assigned_to: e.target.value })} />
-        <input className="input" type="date" value={draft.due_date || ""} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} />
-      </div>
-      <textarea className="input mt-3" placeholder="Corrective action / verification note" value={draft.corrective_action || ""} onChange={(e) => setDraft({ ...draft, corrective_action: e.target.value })} />
-      <div className="mt-3 flex items-center justify-between gap-3"><p className="text-[11px] text-slate-400">Due {draft.due_date || "not set"}</p><button className="btn btn-secondary px-4 py-2 text-xs" type="button" onClick={() => onUpdate(issue, draft)}>Save workflow</button></div>
-    </div>
+
+      <label className="mt-4 block text-[10px] font-black uppercase tracking-[.12em] text-slate-400">
+        Corrective action / verification note
+        <textarea className="input mt-2 block w-full" placeholder="Describe corrective action or verification evidence" value={draft.corrective_action || ""} onChange={(e) => setDraft({ ...draft, corrective_action: e.target.value })} />
+      </label>
+
+      <footer className="mt-4 flex flex-col gap-3 border-t border-emerald-950/7 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[11px] text-slate-400">Due {draft.due_date || "not set"}</p>
+        <button className="btn btn-secondary px-4 py-2 text-xs" type="button" onClick={() => onUpdate(issue, draft)}>Save workflow</button>
+      </footer>
+    </article>
   );
 }
