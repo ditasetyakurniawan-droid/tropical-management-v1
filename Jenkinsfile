@@ -40,7 +40,7 @@ pipeline {
                       -w "$WORKSPACE" \
                       -e HOME=/tmp \
                       golang:1.23-bookworm \
-                      bash -lc '
+                      bash -c '
                         go mod download &&
                         go test ./... &&
                         go vet ./...
@@ -58,7 +58,7 @@ pipeline {
                       -u "$(id -u):$(id -g)" \
                       -e HOME=/tmp \
                       node:22-bookworm-slim \
-                      sh -lc '
+                      sh -c '
                         set -e
                         npm ci
                         npm run build
