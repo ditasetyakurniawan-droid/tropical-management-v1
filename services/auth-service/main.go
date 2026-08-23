@@ -13,6 +13,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const sessionTTL = 30 * time.Minute
+
 type app struct {
 	db     *sql.DB
 	secret []byte
@@ -47,6 +49,7 @@ func main() {
 	})
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
+	mux.HandleFunc("/api/auth/change-password", a.changePassword)
 	mux.HandleFunc("/api/users", a.users)
 
 	log.Println("auth-service listening on :8080")
@@ -104,7 +107,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	claims := jwt.MapClaims{"sub": u.ID, "name": u.Name, "email": u.Email, "role": u.Role, "iat": now.Unix(), "exp": now.Add(8 * time.Hour).Unix()}
+	claims := jwt.MapClaims{"sub": u.ID, "name": u.Name, "email": u.Email, "role": u.Role, "iat": now.Unix(), "exp": now.Add(sessionTTL).Unix()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(a.secret)
 	if err != nil {
@@ -137,6 +140,66 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, claims)
+}
+
+func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.JSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	claims, err := a.parseClaims(r)
+	if err != nil {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	email, _ := claims["email"].(string)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid session"})
+		return
+	}
+
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if len(input.NewPassword) < 12 {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "new password must be at least 12 characters"})
+		return
+	}
+	if input.CurrentPassword == input.NewPassword {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "new password must be different from current password"})
+		return
+	}
+
+	var hash string
+	var active bool
+	if err := a.db.QueryRow("SELECT password_hash,active FROM users WHERE email=?", email).Scan(&hash, &active); err != nil || !active {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "account unavailable"})
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.CurrentPassword)) != nil {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+		return
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "password hashing failed"})
+		return
+	}
+	if _, err := a.db.Exec("UPDATE users SET password_hash=? WHERE email=?", string(newHash), email); err != nil {
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "password update failed"})
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "password updated; sign in again"})
 }
 
 func validRole(role string) bool {

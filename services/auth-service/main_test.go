@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestValidRole(t *testing.T) {
 	valid := []string{"admin", "auditor", "staff"}
@@ -14,5 +17,11 @@ func TestValidRole(t *testing.T) {
 		if validRole(role) {
 			t.Fatalf("expected role %q to be invalid", role)
 		}
+	}
+}
+
+func TestSessionTTL(t *testing.T) {
+	if sessionTTL != 30*time.Minute {
+		t.Fatalf("expected 30 minute session TTL, got %s", sessionTTL)
 	}
 }

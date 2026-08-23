@@ -4,8 +4,8 @@ export default function Loading() {
   return (
     <EnterpriseLoader
       embedded
-      message="Loading operational workspace"
-      detail="Preparing the latest view and interface modules"
+      message="Memuat ruang kerja operasional"
+      detail="Menyiapkan tampilan dan modul antarmuka terbaru"
     />
   );
 }

@@ -1,6 +1,6 @@
 export default function EnterpriseLoader({
-  message = "Preparing your operations workspace",
-  detail = "Synchronizing secure modules and live restaurant data",
+  message = "Menyiapkan ruang kerja operasional",
+  detail = "Menyinkronkan modul aman dan data restoran terbaru",
   embedded = false,
 }) {
   return (
@@ -15,9 +15,9 @@ export default function EnterpriseLoader({
             <span className="enterprise-loader-brand-mark" aria-hidden="true"><span /></span>
             <span className="enterprise-loader-brand-copy">
               <strong>TROPICAL<span>.</span></strong>
-              <small>Management Console</small>
+              <small>Konsol Manajemen</small>
             </span>
-            <span className="enterprise-loader-secure"><i /> Secure session</span>
+            <span className="enterprise-loader-secure"><i /> Sesi aman</span>
           </div>
 
           <div className="enterprise-loader-stage" aria-hidden="true">
@@ -37,9 +37,9 @@ export default function EnterpriseLoader({
           </div>
 
           <div className="enterprise-loader-meta" aria-hidden="true">
-            <span><i /> Interface</span>
-            <span><i /> Operations</span>
-            <span><i /> Insights</span>
+            <span><i /> Antarmuka</span>
+            <span><i /> Operasional</span>
+            <span><i /> Wawasan</span>
           </div>
         </div>
       </div>
