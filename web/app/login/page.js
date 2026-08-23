@@ -72,7 +72,9 @@ export default function Login() {
                 <input className="input mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" autoComplete="current-password" />
               </label>
               {error && <div className="toast-error">{error}</div>}
-              <button className="btn mt-2 w-full" disabled={loading}>{loading ? "Signing in..." : "Enter Control Center"}</button>
+              <button className="btn mt-2 w-full" disabled={loading}>
+                {loading ? <span className="inline-flex items-center justify-center gap-2"><span className="button-spinner" />Signing in securely...</span> : "Enter Control Center"}
+              </button>
             </div>
 
             <p className="mt-7 text-center text-[11px] leading-5 text-slate-400">Local bootstrap credentials are development-only. Production credentials will be Vault-injected.</p>
