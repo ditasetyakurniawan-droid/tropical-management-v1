@@ -78,9 +78,10 @@ export default function LiveChatProvider({ children }) {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        while (!stopped) {
+        while (true) {
+          if (stopped) break;
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || stopped) break;
 
           buffer += decoder.decode(value, { stream: true });
           const events = buffer.split("\n\n");
