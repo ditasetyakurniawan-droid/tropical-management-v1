@@ -72,8 +72,8 @@ export default function RouteTransition({ children }) {
         <div className="route-loading-overlay">
           <EnterpriseLoader
             embedded
-            message="Switching operational view"
-            detail="Loading the next workspace with your session preserved"
+            message="Berpindah tampilan operasional"
+            detail="Memuat halaman berikutnya tanpa memutus sesi Anda"
           />
         </div>
       )}

@@ -57,17 +57,17 @@ export default function Dashboard() {
       <section className="hero-luxury p-7 md:p-10 lg:p-12">
         <div className="relative z-10 grid gap-10 lg:grid-cols-[1.25fr_.75fr] lg:items-end">
           <div>
-            <span className="hero-badge">Live restaurant intelligence</span>
-            <h1 className="mt-6 max-w-3xl text-5xl font-black leading-[.95] tracking-[-.06em] md:text-7xl">Restaurant Control Center</h1>
-            <p className="mt-6 max-w-xl text-sm leading-7 text-emerald-50/72">A single operational view for revenue, audit discipline, findings and stock risk—designed for fast managerial decisions.</p>
+            <span className="hero-badge">Intelijen restoran real-time</span>
+            <h1 className="mt-6 max-w-3xl text-5xl font-black leading-[.95] tracking-[-.06em] md:text-7xl">Pusat Kontrol Restoran</h1>
+            <p className="mt-6 max-w-xl text-sm leading-7 text-emerald-50/72">Satu tampilan operasional untuk pendapatan, disiplin audit, temuan, dan risiko stok agar keputusan manajerial lebih cepat.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-3xl border border-white/10 bg-white/7 p-5 backdrop-blur">
-              <p className="text-[10px] font-black uppercase tracking-[.15em] text-amber-200">Critical findings</p>
+              <p className="text-[10px] font-black uppercase tracking-[.15em] text-amber-200">Temuan kritis</p>
               <p className="mt-2 text-3xl font-black">{critical}</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/7 p-5 backdrop-blur">
-              <p className="text-[10px] font-black uppercase tracking-[.15em] text-amber-200">High findings</p>
+              <p className="text-[10px] font-black uppercase tracking-[.15em] text-amber-200">Temuan tinggi</p>
               <p className="mt-2 text-3xl font-black">{high}</p>
             </div>
           </div>
@@ -77,19 +77,19 @@ export default function Dashboard() {
       {error && <div className="toast-error mt-5">{error}</div>}
 
       <section className="mt-5 grid gap-4 md:grid-cols-3">
-        <Metric label="Sales Today" value={`Rp ${(data?.sales_today || 0).toLocaleString("id-ID")}`} detail={`${data?.orders_today || 0} orders recorded`} accent="#f3d886" />
-        <Metric label="Audit Score" value={`${Number(data?.audit_score || 0).toFixed(1)}%`} detail={`${data?.open_issues || 0} active findings`} accent="#c6dc73" />
-        <Metric label="Inventory Alerts" value={data?.inventory_alerts || 0} detail={`${data?.total_items || 0} tracked stock items`} accent="#79a982" />
+        <Metric label="Penjualan Hari Ini" value={`Rp ${(data?.sales_today || 0).toLocaleString("id-ID")}`} detail={`${data?.orders_today || 0} pesanan tercatat`} accent="#f3d886" />
+        <Metric label="Skor Audit" value={`${Number(data?.audit_score || 0).toFixed(1)}%`} detail={`${data?.open_issues || 0} temuan aktif`} accent="#c6dc73" />
+        <Metric label="Peringatan Inventaris" value={data?.inventory_alerts || 0} detail={`${data?.total_items || 0} item stok dipantau`} accent="#79a982" />
       </section>
 
       <section className="mt-5 grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
         <div className="card p-6 md:p-7">
           <div className="flex items-end justify-between gap-4">
             <div>
-              <p className="eyebrow">Revenue pulse</p>
-              <h2 className="mt-2 text-2xl font-black tracking-tight text-emerald-950">Recent sales performance</h2>
+              <p className="eyebrow">Pergerakan Pendapatan</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-emerald-950">Kinerja penjualan terbaru</h2>
             </div>
-            <Link href="/sales" className="text-xs font-black text-amber-700">Open Sales →</Link>
+            <Link href="/sales" className="text-xs font-black text-amber-700">Buka Penjualan →</Link>
           </div>
           <div className="mt-7 mini-chart">
             {recentSales.length ? recentSales.map((x) => (
@@ -97,17 +97,17 @@ export default function Dashboard() {
                 <div className="mini-bar" style={{ height: `${Math.max((Number(x.revenue) / maxRevenue) * 100, 8)}%` }} />
                 <span className="truncate text-center text-[9px] font-bold text-slate-400">{String(x.business_date).slice(5)}</span>
               </div>
-            )) : <div className="empty-state w-full">Add sales entries to reveal the revenue trend.</div>}
+            )) : <div className="empty-state w-full">Tambahkan data penjualan untuk menampilkan tren pendapatan.</div>}
           </div>
         </div>
 
         <div className="card p-6 md:p-7">
           <div className="flex items-end justify-between gap-4">
             <div>
-              <p className="eyebrow">Compliance pulse</p>
-              <h2 className="mt-2 text-2xl font-black tracking-tight text-emerald-950">Latest audit quality</h2>
+              <p className="eyebrow">Pergerakan Kepatuhan</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-emerald-950">Kualitas audit terbaru</h2>
             </div>
-            <Link href="/audits" className="text-xs font-black text-amber-700">Open Audit →</Link>
+            <Link href="/audits" className="text-xs font-black text-amber-700">Buka Audit →</Link>
           </div>
           <div className="mt-6 space-y-4">
             {recentAudits.length ? recentAudits.map((x) => (
@@ -118,7 +118,7 @@ export default function Dashboard() {
                 </div>
                 <div className="progress-track"><div className="progress-value" style={{ width: `${Math.max(0, Math.min(100, Number(x.score)))}%` }} /></div>
               </div>
-            )) : <div className="empty-state">Submit an audit to reveal compliance quality.</div>}
+            )) : <div className="empty-state">Kirim audit untuk menampilkan kualitas kepatuhan.</div>}
           </div>
         </div>
       </section>
@@ -126,11 +126,11 @@ export default function Dashboard() {
       <section className="mt-5 grid gap-5 lg:grid-cols-2">
         <div className="card p-6 md:p-7">
           <div className="flex items-center justify-between gap-4">
-            <div><p className="eyebrow">Corrective actions</p><h2 className="mt-2 text-xl font-black text-emerald-950">Open finding risk</h2></div>
-            <span className="status-pill status-open">{issues.filter((x) => x.status !== "closed").length} active</span>
+            <div><p className="eyebrow">Tindakan Korektif</p><h2 className="mt-2 text-xl font-black text-emerald-950">Risiko temuan terbuka</h2></div>
+            <span className="status-pill status-open">{issues.filter((x) => x.status !== "closed").length} aktif</span>
           </div>
           <div className="mt-5 grid grid-cols-2 gap-3">
-            {[["Critical", critical, "severity-critical"], ["High", high, "severity-high"]].map(([label, count, cls]) => (
+            {[["Kritis", critical, "severity-critical"], ["Tinggi", high, "severity-high"]].map(([label, count, cls]) => (
               <div key={label} className="rounded-2xl border border-emerald-950/8 bg-white/55 p-4">
                 <span className={`status-pill ${cls}`}>{label}</span>
                 <p className="mt-3 text-3xl font-black text-emerald-950">{count}</p>
@@ -141,16 +141,16 @@ export default function Dashboard() {
 
         <div className="card p-6 md:p-7">
           <div className="flex items-center justify-between gap-4">
-            <div><p className="eyebrow">Inventory health</p><h2 className="mt-2 text-xl font-black text-emerald-950">Items requiring attention</h2></div>
-            <Link href="/inventory" className="text-xs font-black text-amber-700">Manage →</Link>
+            <div><p className="eyebrow">Kesehatan Inventaris</p><h2 className="mt-2 text-xl font-black text-emerald-950">Item yang perlu perhatian</h2></div>
+            <Link href="/inventory" className="text-xs font-black text-amber-700">Kelola →</Link>
           </div>
           <div className="mt-5 space-y-3">
             {lowStock.length ? lowStock.map((x) => (
               <div key={x.id} className="flex items-center justify-between rounded-2xl border border-red-100 bg-red-50/55 px-4 py-3">
-                <div><p className="font-black text-emerald-950">{x.name}</p><p className="text-xs text-slate-500">Reorder at {x.reorder_level} {x.unit}</p></div>
+                <div><p className="font-black text-emerald-950">{x.name}</p><p className="text-xs text-slate-500">Pesan ulang pada {x.reorder_level} {x.unit}</p></div>
                 <span className="font-black text-red-700">{x.stock} {x.unit}</span>
               </div>
-            )) : <div className="empty-state">Inventory is currently above configured reorder levels.</div>}
+            )) : <div className="empty-state">Stok saat ini masih di atas batas pemesanan ulang.</div>}
           </div>
         </div>
       </section>

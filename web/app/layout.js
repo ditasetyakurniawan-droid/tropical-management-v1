@@ -5,10 +5,12 @@ import PwaRegister from "../components/PwaRegister";
 import SessionGate from "../components/SessionGate";
 import TropicalAtmosphere from "../components/TropicalAtmosphere";
 import RouteTransition from "../components/RouteTransition";
+import LiveChatProvider from "../components/LiveChatProvider";
+import FloatingChat from "../components/FloatingChat";
 
 export const metadata = {
   title: "Tropical Management",
-  description: "Restaurant Management & Internal Audit",
+  description: "Manajemen Restoran & Audit Internal",
   manifest: "/manifest.webmanifest",
 };
 
@@ -20,11 +22,14 @@ export default function RootLayout({ children }) {
         <div className="tropical-shell">
           <TropicalAtmosphere />
           <Nav />
-          <SessionGate>
-            <div className="relative z-10">
-              <RouteTransition>{children}</RouteTransition>
-            </div>
-          </SessionGate>
+          <LiveChatProvider>
+            <SessionGate>
+              <div className="relative z-10">
+                <RouteTransition>{children}</RouteTransition>
+              </div>
+            </SessionGate>
+            <FloatingChat />
+          </LiveChatProvider>
         </div>
       </body>
     </html>

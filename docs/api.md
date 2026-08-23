@@ -82,3 +82,14 @@ Stock adjustments are transactional and cannot reduce stock below zero.
 ```
 
 Every successful adjustment creates a row in `stock_movements`.
+
+## Session Security Update
+
+- JWT access tokens have an absolute lifetime of **30 minutes**.
+- Browser auth state is stored in `sessionStorage`, not persistent `localStorage`.
+- Closing the browser session removes the application login state.
+- The frontend signs the user out after **15 minutes of inactivity**. Click, keyboard, scroll, touch, and route navigation reset the idle timer.
+- `POST /api/auth/change-password` changes the currently authenticated user's password after verifying the current password. New passwords require at least 12 characters.
+- A successful password change signs the browser out and requires a fresh login.
+
+`BOOTSTRAP_ADMIN_PASSWORD` remains a bootstrap-only credential: it creates the initial admin when the account does not exist. Changing that Vault key does not overwrite an already-created user's password.

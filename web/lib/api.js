@@ -1,8 +1,59 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
+const TOKEN_KEY = "tropical_token";
+const USER_KEY = "tropical_user";
+
+function clearLegacyLocalStorage() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
 export function token() {
   if (typeof window === "undefined") return "";
-  return localStorage.getItem("tropical_token") || "";
+  clearLegacyLocalStorage();
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function sessionUser() {
+  if (typeof window === "undefined") return null;
+  clearLegacyLocalStorage();
+  try {
+    const raw = sessionStorage.getItem(USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSession(jwt, user) {
+  if (typeof window === "undefined") return;
+  clearLegacyLocalStorage();
+  try {
+    sessionStorage.setItem(TOKEN_KEY, jwt);
+    sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    clearSession();
+  }
+}
+
+export function clearSession() {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
+  } catch {
+    // Ignore storage cleanup failures and continue with navigation.
+  }
+  clearLegacyLocalStorage();
 }
 
 export async function api(path, options = {}) {
@@ -26,7 +77,8 @@ export async function api(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
 
   if (response.status === 401 && typeof window !== "undefined") {
-    window.location.href = "/login";
+    clearSession();
+    window.location.replace("/login");
   }
 
   if (!response.ok) {
