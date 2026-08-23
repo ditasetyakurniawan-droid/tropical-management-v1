@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { api, token } from "../lib/api";
+import EnterpriseLoader from "./EnterpriseLoader";
 
 export default function SessionGate({ children }) {
   const pathname = usePathname();
@@ -33,10 +34,10 @@ export default function SessionGate({ children }) {
 
   if (!ready) {
     return (
-      <div className="session-loading">
-        <div className="luxury-spinner" />
-        <p>Preparing your operations workspace...</p>
-      </div>
+      <EnterpriseLoader
+        message="Preparing your operations workspace"
+        detail="Validating your secure session and management permissions"
+      />
     );
   }
 
