@@ -6,44 +6,74 @@ import (
 	"testing"
 )
 
-func TestEnvUsesFileBeforeEnvironment(t *testing.T) {
-	key := "HTTPX_TEST_SECRET"
-	secretFile := filepath.Join(t.TempDir(), "secret")
-	if err := os.WriteFile(secretFile, []byte("from-file\n"), 0o600); err != nil {
+const (
+	fallbackValue = "fallback"
+	fromFileValue = "from-file"
+	fromEnvValue  = "from-env"
+	fromEnvPadded = " from-env "
+	envErrFormat  = "Env() = %q, want %q"
+)
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	t.Setenv(key, "from-env")
-	t.Setenv(key+"_FILE", secretFile)
-
-	if got := Env(key, "fallback"); got != "from-file" {
-		t.Fatalf("Env() = %q, want %q", got, "from-file")
-	}
+	return path
 }
 
-func TestEnvUsesEnvironmentWhenFileIsUnset(t *testing.T) {
-	key := "HTTPX_TEST_ENV"
-	t.Setenv(key, " from-env ")
-	t.Setenv(key+"_FILE", "")
-
-	if got := Env(key, "fallback"); got != "from-env" {
-		t.Fatalf("Env() = %q, want %q", got, "from-env")
+func TestEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		envVal  string
+		fileVal string // kosong berarti tidak membuat file
+		want    string
+	}{
+		{
+			name:    "file before environment",
+			key:     "HTTPX_TEST_SECRET",
+			envVal:  fromEnvValue,
+			fileVal: fromFileValue + "\n",
+			want:    fromFileValue,
+		},
+		{
+			name:    "environment when file unset",
+			key:     "HTTPX_TEST_ENV",
+			envVal:  fromEnvPadded,
+			fileVal: "",
+			want:    fromEnvValue,
+		},
+		{
+			name:    "fallback when no configuration",
+			key:     "HTTPX_TEST_FALLBACK",
+			envVal:  "",
+			fileVal: "",
+			want:    fallbackValue,
+		},
 	}
-}
 
-func TestEnvUsesFallbackWhenNoConfigurationExists(t *testing.T) {
-	key := "HTTPX_TEST_FALLBACK"
-	t.Setenv(key, "")
-	t.Setenv(key+"_FILE", "")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var secretFile string
+			if tt.fileVal != "" {
+				secretFile = writeTempFile(t, tt.fileVal)
+			}
 
-	if got := Env(key, "fallback"); got != "fallback" {
-		t.Fatalf("Env() = %q, want %q", got, "fallback")
+			t.Setenv(tt.key, tt.envVal)
+			t.Setenv(tt.key+"_FILE", secretFile)
+
+			if got := Env(tt.key, fallbackValue); got != tt.want {
+				t.Fatalf(envErrFormat, got, tt.want)
+			}
+		})
 	}
 }
 
 func TestEnvPanicsWhenConfiguredFileCannotBeRead(t *testing.T) {
 	key := "HTTPX_TEST_MISSING_FILE"
-	t.Setenv(key, "from-env")
+	t.Setenv(key, fromEnvValue)
 	t.Setenv(key+"_FILE", filepath.Join(t.TempDir(), "missing"))
 
 	defer func() {
@@ -52,16 +82,12 @@ func TestEnvPanicsWhenConfiguredFileCannotBeRead(t *testing.T) {
 		}
 	}()
 
-	_ = Env(key, "fallback")
+	_ = Env(key, fallbackValue)
 }
 
 func TestEnvPanicsWhenConfiguredFileIsEmpty(t *testing.T) {
 	key := "HTTPX_TEST_EMPTY_FILE"
-	secretFile := filepath.Join(t.TempDir(), "secret")
-	if err := os.WriteFile(secretFile, []byte("\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	secretFile := writeTempFile(t, "\n")
 	t.Setenv(key+"_FILE", secretFile)
 
 	defer func() {
@@ -70,5 +96,5 @@ func TestEnvPanicsWhenConfiguredFileIsEmpty(t *testing.T) {
 		}
 	}()
 
-	_ = Env(key, "fallback")
+	_ = Env(key, fallbackValue)
 }

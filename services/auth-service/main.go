@@ -13,7 +13,70 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const sessionTTL = 30 * time.Minute
+const (
+	sessionTTL = 30 * time.Minute
+
+	defaultDSN                 = "tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4"
+	defaultJWTSecret           = "local-dev-secret-change-this-value"
+	defaultBootstrapAdminEmail = "admin@tropical.local"
+	defaultBootstrapAdminPass  = "ChangeThis123!"
+	serviceName                = "auth-service"
+	listenAddr                 = ":8080"
+
+	// Role constants
+	roleAdmin   = "admin"
+	roleAuditor = "auditor"
+	roleStaff   = "staff"
+
+	// Error messages
+	errMethodNotAllowed         = "method not allowed"
+	errInvalidJSON              = "invalid json"
+	errUnauthorized             = "unauthorized"
+	errInvalidCredentials       = "invalid credentials or inactive user"
+	errTokenGenerationFailed    = "token generation failed"
+	errInvalidSession           = "invalid session"
+	errAccountUnavailable       = "account unavailable"
+	errCurrentPasswordIncorrect = "current password is incorrect"
+	errPasswordHashingFailed    = "password hashing failed"
+	errPasswordUpdateFailed     = "password update failed"
+	errNewPasswordTooShort      = "new password must be at least 12 characters"
+	errNewPasswordSameAsCurrent = "new password must be different from current password"
+	errAdminRoleRequired        = "admin role required"
+	errInvalidUserInput         = "name/email required, password min 8 chars, and role must be admin/auditor/staff"
+	errUserAlreadyExists        = "user already exists or invalid"
+	errIDAndJSONRequired        = "id and valid json required"
+	errNameAndRoleRequired      = "name and valid role required"
+	errNewPasswordTooShort8     = "new password must be at least 8 characters"
+
+	// SQL queries
+	createUsersTable = `CREATE TABLE IF NOT EXISTS users (
+		id BIGINT PRIMARY KEY AUTO_INCREMENT,
+		name VARCHAR(120) NOT NULL,
+		email VARCHAR(190) NOT NULL UNIQUE,
+		password_hash VARCHAR(255) NOT NULL,
+		role VARCHAR(30) NOT NULL DEFAULT 'staff',
+		active BOOLEAN NOT NULL DEFAULT TRUE,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+
+	alterUsersAddActive = `ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE`
+
+	selectUserForLogin = `SELECT id,name,email,password_hash,role,active FROM users WHERE email=?`
+
+	insertUser = `INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,TRUE)`
+
+	selectUserPasswordByEmail = `SELECT password_hash,active FROM users WHERE email=?`
+
+	updateUserPassword = `UPDATE users SET password_hash=? WHERE email=?`
+
+	selectUsersList = `SELECT id,name,email,role,active FROM users ORDER BY id DESC`
+
+	updateUserWithPassword = `UPDATE users SET name=?,role=?,active=?,password_hash=? WHERE id=?`
+
+	updateUserWithoutPassword = `UPDATE users SET name=?,role=?,active=? WHERE id=?`
+
+	countUserByEmail = `SELECT COUNT(*) FROM users WHERE email=?`
+)
 
 type app struct {
 	db     *sql.DB
@@ -29,13 +92,16 @@ type user struct {
 }
 
 func main() {
-	db, err := dbx.Open(httpx.Env("AUTH_DB_DSN", "tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4"))
+	db, err := dbx.Open(httpx.Env("AUTH_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	a := &app{db: db, secret: []byte(httpx.Env("JWT_SECRET", "local-dev-secret-change-this-value"))}
+	a := &app{
+		db:     db,
+		secret: []byte(httpx.Env("JWT_SECRET", defaultJWTSecret)),
+	}
 	if err := a.migrate(); err != nil {
 		log.Fatal(err)
 	}
@@ -45,73 +111,97 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "auth-service"})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
 	})
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/change-password", a.changePassword)
 	mux.HandleFunc("/api/users", a.users)
 
-	log.Println("auth-service listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Println(serviceName + " listening on " + listenAddr)
+	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+// writeError mengirimkan JSON error yang konsisten.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	httpx.JSON(w, status, map[string]string{"error": msg})
+}
+
+// normalizeEmail membersihkan dan menyeragamkan format email.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 func (a *app) migrate() error {
-	_, err := a.db.Exec(`CREATE TABLE IF NOT EXISTS users (
-		id BIGINT PRIMARY KEY AUTO_INCREMENT,
-		name VARCHAR(120) NOT NULL,
-		email VARCHAR(190) NOT NULL UNIQUE,
-		password_hash VARCHAR(255) NOT NULL,
-		role VARCHAR(30) NOT NULL DEFAULT 'staff',
-		active BOOLEAN NOT NULL DEFAULT TRUE,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
-	if err != nil {
+	if _, err := a.db.Exec(createUsersTable); err != nil {
 		return err
 	}
 	// Existing local databases from Phase 2 do not yet have the active flag.
 	// Duplicate-column errors are intentionally ignored so this remains restart-safe.
-	_, _ = a.db.Exec(`ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE`)
+	if _, err := a.db.Exec(alterUsersAddActive); err != nil {
+		log.Printf("migrate warning: %v", err)
+	}
 	return nil
 }
 
 func (a *app) bootstrapAdmin() error {
-	email := httpx.Env("BOOTSTRAP_ADMIN_EMAIL", "admin@tropical.local")
-	password := httpx.Env("BOOTSTRAP_ADMIN_PASSWORD", "ChangeThis123!")
+	email := normalizeEmail(httpx.Env("BOOTSTRAP_ADMIN_EMAIL", defaultBootstrapAdminEmail))
+	password := httpx.Env("BOOTSTRAP_ADMIN_PASSWORD", defaultBootstrapAdminPass)
+
 	var count int
-	if err := a.db.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", email).Scan(&count); err != nil || count > 0 {
+	if err := a.db.QueryRow(countUserByEmail, email).Scan(&count); err != nil {
 		return err
 	}
+	if count > 0 {
+		return nil // admin already exists
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec("INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,TRUE)", "Tropical Admin", email, string(hash), "admin")
+	_, err = a.db.Exec(insertUser, "Tropical Admin", email, string(hash), roleAdmin)
 	return err
 }
 
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		httpx.JSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
-	var input struct{ Email, Password string }
+	var input struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
+
+	email := normalizeEmail(input.Email)
 	var u user
 	var hash string
-	if err := a.db.QueryRow("SELECT id,name,email,password_hash,role,active FROM users WHERE email=?", strings.ToLower(strings.TrimSpace(input.Email))).Scan(&u.ID, &u.Name, &u.Email, &hash, &u.Role, &u.Active); err != nil || !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials or inactive user"})
+	err := a.db.QueryRow(selectUserForLogin, email).Scan(
+		&u.ID, &u.Name, &u.Email, &hash, &u.Role, &u.Active,
+	)
+	if err != nil || !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
+		writeError(w, http.StatusUnauthorized, errInvalidCredentials)
 		return
 	}
+
 	now := time.Now()
-	claims := jwt.MapClaims{"sub": u.ID, "name": u.Name, "email": u.Email, "role": u.Role, "iat": now.Unix(), "exp": now.Add(sessionTTL).Unix()}
+	claims := jwt.MapClaims{
+		"sub":   u.ID,
+		"name":  u.Name,
+		"email": u.Email,
+		"role":  u.Role,
+		"iat":   now.Unix(),
+		"exp":   now.Add(sessionTTL).Unix(),
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(a.secret)
 	if err != nil {
-		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
+		writeError(w, http.StatusInternalServerError, errTokenGenerationFailed)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"token": signed, "user": u})
@@ -122,7 +212,8 @@ func (a *app) parseClaims(r *http.Request) (jwt.MapClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	token, err := jwt.Parse(raw, func(token *jwt.Token) (any, error) { return a.secret, nil }, jwt.WithValidMethods([]string{"HS256"}))
+	token, err := jwt.Parse(raw, func(token *jwt.Token) (any, error) { return a.secret, nil },
+		jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
@@ -136,7 +227,7 @@ func (a *app) parseClaims(r *http.Request) (jwt.MapClaims, error) {
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
 	if err != nil {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, claims)
@@ -144,20 +235,20 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		httpx.JSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 
 	claims, err := a.parseClaims(r)
 	if err != nil {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 
 	email, _ := claims["email"].(string)
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = normalizeEmail(email)
 	if email == "" {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid session"})
+		writeError(w, http.StatusUnauthorized, errInvalidSession)
 		return
 	}
 
@@ -166,36 +257,36 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 	if len(input.NewPassword) < 12 {
-		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "new password must be at least 12 characters"})
+		writeError(w, http.StatusBadRequest, errNewPasswordTooShort)
 		return
 	}
 	if input.CurrentPassword == input.NewPassword {
-		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "new password must be different from current password"})
+		writeError(w, http.StatusBadRequest, errNewPasswordSameAsCurrent)
 		return
 	}
 
 	var hash string
 	var active bool
-	if err := a.db.QueryRow("SELECT password_hash,active FROM users WHERE email=?", email).Scan(&hash, &active); err != nil || !active {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "account unavailable"})
+	if err := a.db.QueryRow(selectUserPasswordByEmail, email).Scan(&hash, &active); err != nil || !active {
+		writeError(w, http.StatusUnauthorized, errAccountUnavailable)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.CurrentPassword)) != nil {
-		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+		writeError(w, http.StatusUnauthorized, errCurrentPasswordIncorrect)
 		return
 	}
 
 	newHash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "password hashing failed"})
+		writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
 		return
 	}
-	if _, err := a.db.Exec("UPDATE users SET password_hash=? WHERE email=?", string(newHash), email); err != nil {
-		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "password update failed"})
+	if _, err := a.db.Exec(updateUserPassword, string(newHash), email); err != nil {
+		writeError(w, http.StatusInternalServerError, errPasswordUpdateFailed)
 		return
 	}
 
@@ -203,57 +294,85 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func validRole(role string) bool {
-	return role == "admin" || role == "auditor" || role == "staff"
+	switch role {
+	case roleAdmin, roleAuditor, roleStaff:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
-	if err != nil || claims["role"] != "admin" {
-		httpx.JSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+	if err != nil || claims["role"] != roleAdmin {
+		writeError(w, http.StatusForbidden, errAdminRoleRequired)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query("SELECT id,name,email,role,active FROM users ORDER BY id DESC")
+		rows, err := a.db.Query(selectUsersList)
 		if err != nil {
-			httpx.JSON(w, 500, map[string]string{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		defer rows.Close()
+
 		result := []user{}
 		for rows.Next() {
 			var u user
-			if rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active) == nil {
-				result = append(result, u)
+			if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
+			result = append(result, u)
 		}
-		httpx.JSON(w, 200, result)
+		if err := rows.Err(); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		httpx.JSON(w, http.StatusOK, result)
 
 	case http.MethodPost:
-		var input struct{ Name, Email, Password, Role string }
+		var input struct {
+			Name     string `json:"name"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+		}
 		if err := httpx.DecodeJSON(r, &input); err != nil {
-			httpx.JSON(w, 400, map[string]string{"error": "invalid json"})
+			writeError(w, http.StatusBadRequest, errInvalidJSON)
 			return
 		}
-		role := strings.ToLower(strings.TrimSpace(input.Role))
-		if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Email) == "" || len(input.Password) < 8 || !validRole(role) {
-			httpx.JSON(w, 400, map[string]string{"error": "name/email required, password min 8 chars, and role must be admin/auditor/staff"})
+
+		input.Name = strings.TrimSpace(input.Name)
+		input.Email = normalizeEmail(input.Email)
+		input.Role = strings.ToLower(strings.TrimSpace(input.Role))
+
+		if input.Name == "" || input.Email == "" || len(input.Password) < 8 || !validRole(input.Role) {
+			writeError(w, http.StatusBadRequest, errInvalidUserInput)
 			return
 		}
+
 		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 		if err != nil {
-			httpx.JSON(w, 500, map[string]string{"error": "password hashing failed"})
+			writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
 			return
 		}
-		email := strings.ToLower(strings.TrimSpace(input.Email))
-		res, err := a.db.Exec("INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,TRUE)", strings.TrimSpace(input.Name), email, string(hash), role)
+
+		res, err := a.db.Exec(insertUser, input.Name, input.Email, string(hash), input.Role)
 		if err != nil {
-			httpx.JSON(w, 409, map[string]string{"error": "user already exists or invalid"})
+			writeError(w, http.StatusConflict, errUserAlreadyExists)
 			return
 		}
 		id, _ := res.LastInsertId()
-		httpx.JSON(w, 201, user{ID: id, Name: strings.TrimSpace(input.Name), Email: email, Role: role, Active: true})
+		httpx.JSON(w, http.StatusCreated, user{
+			ID:     id,
+			Name:   input.Name,
+			Email:  input.Email,
+			Role:   input.Role,
+			Active: true,
+		})
 
 	case http.MethodPatch:
 		var input struct {
@@ -264,39 +383,45 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 			Password string `json:"password"`
 		}
 		if err := httpx.DecodeJSON(r, &input); err != nil || input.ID == 0 {
-			httpx.JSON(w, 400, map[string]string{"error": "id and valid json required"})
+			writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
 			return
 		}
-		role := strings.ToLower(strings.TrimSpace(input.Role))
-		if strings.TrimSpace(input.Name) == "" || !validRole(role) {
-			httpx.JSON(w, 400, map[string]string{"error": "name and valid role required"})
+
+		input.Name = strings.TrimSpace(input.Name)
+		input.Role = strings.ToLower(strings.TrimSpace(input.Role))
+
+		if input.Name == "" || !validRole(input.Role) {
+			writeError(w, http.StatusBadRequest, errNameAndRoleRequired)
 			return
 		}
 		if input.Password != "" && len(input.Password) < 8 {
-			httpx.JSON(w, 400, map[string]string{"error": "new password must be at least 8 characters"})
+			writeError(w, http.StatusBadRequest, errNewPasswordTooShort8)
 			return
 		}
+
+		var err error
 		if input.Password != "" {
-			hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-			if err != nil {
-				httpx.JSON(w, 500, map[string]string{"error": "password hashing failed"})
+			hash, hashErr := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+			if hashErr != nil {
+				writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
 				return
 			}
-			_, err = a.db.Exec("UPDATE users SET name=?,role=?,active=?,password_hash=? WHERE id=?", strings.TrimSpace(input.Name), role, input.Active, string(hash), input.ID)
-			if err != nil {
-				httpx.JSON(w, 500, map[string]string{"error": err.Error()})
-				return
-			}
+			_, err = a.db.Exec(updateUserWithPassword, input.Name, input.Role, input.Active, string(hash), input.ID)
 		} else {
-			_, err = a.db.Exec("UPDATE users SET name=?,role=?,active=? WHERE id=?", strings.TrimSpace(input.Name), role, input.Active, input.ID)
-			if err != nil {
-				httpx.JSON(w, 500, map[string]string{"error": err.Error()})
-				return
-			}
+			_, err = a.db.Exec(updateUserWithoutPassword, input.Name, input.Role, input.Active, input.ID)
 		}
-		httpx.JSON(w, 200, map[string]any{"id": input.ID, "name": strings.TrimSpace(input.Name), "role": role, "active": input.Active})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"id":     input.ID,
+			"name":   input.Name,
+			"role":   input.Role,
+			"active": input.Active,
+		})
 
 	default:
-		httpx.JSON(w, 405, map[string]string{"error": "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
