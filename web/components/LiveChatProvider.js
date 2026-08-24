@@ -53,6 +53,47 @@ async function loadHistory({ appendMessage, onError, isActive }) {
   }
 }
 
+async function openStream() {
+  const authToken = token();
+  const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+    cache: "no-store",
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.body.getReader();
+}
+
+async function consumeStream({ reader, appendMessage, isActive, isStopped }) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    if (isStopped() || !isActive()) {
+      reader.cancel();
+      break;
+    }
+
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+
+    for (const event of events) {
+      const parsed = parseSSEEvent(event);
+      if (parsed) appendMessage([parsed]);
+    }
+  }
+
+  if (buffer && isActive() && !isStopped()) {
+    const parsed = parseSSEEvent(buffer);
+    if (parsed) appendMessage([parsed]);
+  }
+}
+
 async function connectChatStream({
   appendMessage,
   onConnected,
@@ -61,51 +102,12 @@ async function connectChatStream({
   isActive,
   isStopped,
 }) {
-  const streamController = new AbortController();
-  const authToken = token();
-
   try {
-    const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-      cache: "no-store",
-      signal: streamController.signal,
-    });
-
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
+    const reader = await openStream();
     if (!isActive()) return;
 
     onConnected();
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      if (isStopped() || !isActive()) {
-        reader.cancel();
-        break;
-      }
-
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split("\n\n");
-      buffer = events.pop() || "";
-
-      for (const event of events) {
-        const parsed = parseSSEEvent(event);
-        if (parsed) appendMessage([parsed]);
-      }
-    }
-
-    if (buffer && isActive() && !isStopped()) {
-      const parsed = parseSSEEvent(buffer);
-      if (parsed) appendMessage([parsed]);
-    }
+    await consumeStream({ reader, appendMessage, isActive, isStopped });
   } catch (err) {
     if (isActive() && !isStopped() && err?.name !== "AbortError") {
       onError("Koneksi chat sedang disambungkan ulang...");
@@ -113,9 +115,18 @@ async function connectChatStream({
   } finally {
     if (isActive() && !isStopped()) {
       onDisconnected();
-      window.setTimeout(() => connectChatStream({
-        appendMessage, onConnected, onDisconnected, onError, isActive, isStopped,
-      }), RETRY_DELAY_MS);
+      window.setTimeout(
+        () =>
+          connectChatStream({
+            appendMessage,
+            onConnected,
+            onDisconnected,
+            onError,
+            isActive,
+            isStopped,
+          }),
+        RETRY_DELAY_MS
+      );
     }
   }
 }
@@ -138,7 +149,9 @@ export default function LiveChatProvider({ children }) {
 
   const appendMessage = useCallback((incoming) => {
     setMessages((rows) => {
-      const valid = incoming.filter((msg) => msg?.id && !rows.some((row) => row.id === msg.id));
+      const valid = incoming.filter(
+        (msg) => msg?.id && !rows.some((row) => row.id === msg.id)
+      );
       return [...rows, ...valid].slice(-MESSAGE_LIMIT_MAX);
     });
   }, []);
