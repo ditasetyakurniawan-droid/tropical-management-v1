@@ -42,7 +42,7 @@ pipeline {
                       golang:1.23-bookworm \
                       bash -c '
                         go mod download &&
-                        go test ./... &&
+                        go test -coverprofile=coverage.out ./... &&
                         go vet ./...
                       '
                 '''
@@ -91,6 +91,7 @@ pipeline {
                           -Dsonar.projectKey="$SONAR_PROJECT" \
                           -Dsonar.projectName="Tropical Management" \
                           -Dsonar.sources=. \
+                          -Dsonar.go.coverage.reportPaths=coverage.out \
                           -Dsonar.exclusions="**/node_modules/**,**/.next/**,**/.git/**,**/coverage/**" \
                           -Dsonar.qualitygate.wait=true \
                           -Dsonar.qualitygate.timeout=300
