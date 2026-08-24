@@ -110,9 +110,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-	})
+	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/change-password", a.changePassword)
@@ -120,6 +118,10 @@ func main() {
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
 }
 
 // writeError mengirimkan JSON error yang konsisten.

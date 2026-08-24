@@ -16,6 +16,7 @@ const (
 	serviceName = "audit-service"
 	listenAddr  = ":8080"
 
+	// Error messages
 	errInvalidJSON           = "invalid json"
 	errMethodNotAllowed      = "method not allowed"
 	errRestaurantAuditor     = "restaurant and auditor are required"
@@ -25,19 +26,20 @@ const (
 	errInvalidIssueStatus    = "invalid issue status"
 	errIDAndJSONRequired     = "id and valid json required"
 
+	// Severity values
 	severityLow      = "low"
 	severityMedium   = "medium"
 	severityHigh     = "high"
 	severityCritical = "critical"
 
+	// Issue status values
 	statusOpen       = "open"
 	statusInProgress = "in_progress"
 	statusResolved   = "resolved"
 	statusVerified   = "verified"
 	statusClosed     = "closed"
-)
 
-const (
+	// SQL queries
 	createAuditsTable = `CREATE TABLE IF NOT EXISTS audits (
 		id BIGINT PRIMARY KEY AUTO_INCREMENT,
 		restaurant VARCHAR(150) NOT NULL,
@@ -130,9 +132,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/api/audits", a.handleAudits)
-	mux.HandleFunc("/api/issues", a.handleIssues)
-	mux.HandleFunc("/internal/summary", a.handleSummary)
+	mux.HandleFunc("/api/audits", a.audits)
+	mux.HandleFunc("/api/issues", a.issues)
+	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
@@ -154,6 +156,8 @@ func (a *app) migrate() error {
 		}
 	}
 
+	// Phase-2 databases already have issues. These ALTERs are restart-safe because
+	// duplicate-column/index errors are intentionally ignored during local migration.
 	alterQueries := []string{
 		`ALTER TABLE issues ADD COLUMN due_date DATE NULL`,
 		`ALTER TABLE issues ADD COLUMN corrective_action TEXT`,
@@ -190,16 +194,15 @@ func validIssueStatus(v string) bool {
 // AUDITS
 // ============================================================
 
-func (a *app) handleAudits(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+func (a *app) audits(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
 		a.getAudits(w)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.createAudit(w, r)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getAudits(w http.ResponseWriter) {
@@ -259,46 +262,33 @@ func validateAudit(x audit) string {
 	if x.Restaurant == "" || x.Auditor == "" {
 		return errRestaurantAuditor
 	}
-	if !isValidScore(x.Cleanliness) {
+	if x.Cleanliness < 0 || x.Cleanliness > 100 {
 		return errScoreRange
 	}
-	if !isValidScore(x.SOP) {
+	if x.SOP < 0 || x.SOP > 100 {
 		return errScoreRange
 	}
-	if !isValidScore(x.FoodQuality) {
+	if x.FoodQuality < 0 || x.FoodQuality > 100 {
 		return errScoreRange
 	}
 	return ""
-}
-
-func isValidScore(score int) bool {
-	if score < 0 {
-		return false
-	}
-	if score > 100 {
-		return false
-	}
-	return true
 }
 
 // ============================================================
 // ISSUES
 // ============================================================
 
-func (a *app) handleIssues(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+func (a *app) issues(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
 		a.getIssues(w)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.createIssue(w, r)
-		return
-	}
-	if r.Method == http.MethodPatch {
+	case http.MethodPatch:
 		a.updateIssue(w, r)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getIssues(w http.ResponseWriter) {
@@ -379,11 +369,7 @@ func validateIssue(x issue) string {
 
 func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 	var x issue
-	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
-		return
-	}
-	if x.ID == 0 {
+	if err := httpx.DecodeJSON(r, &x); err != nil || x.ID == 0 {
 		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
 		return
 	}
@@ -416,7 +402,7 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 // SUMMARY
 // ============================================================
 
-func (a *app) handleSummary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 	score, err := a.avgScore30Days()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -19,6 +19,7 @@ const SSE_EVENT_PREFIX = "data:";
 const HISTORY_ENDPOINT = "/api/chat/messages";
 const STREAM_ENDPOINT = "/api/chat/stream";
 
+// Helper untuk membandingkan user ID
 export function isOwnChatMessage(message, currentUser) {
   const currentId = currentUser?.sub ?? currentUser?.id;
 
@@ -26,6 +27,7 @@ export function isOwnChatMessage(message, currentUser) {
   return String(message?.user_id) === String(currentId);
 }
 
+// Helper untuk parsing satu event SSE menjadi objek JSON
 function parseSSEEvent(eventText) {
   if (!eventText) return null;
 
@@ -40,6 +42,7 @@ function parseSSEEvent(eventText) {
   try {
     return JSON.parse(data);
   } catch {
+    // Abaikan event yang rusak, pertahankan koneksi
     return null;
   }
 }

@@ -81,10 +81,12 @@ func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// writeError mengirimkan JSON error yang konsisten.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
+// fetchJSON mengambil data JSON dari URL upstream dan memasukkannya ke dest.
 func (c *dashboardClient) fetchJSON(url string, dest any) error {
 	resp, err := c.httpClient.Get(url)
 	if err != nil {

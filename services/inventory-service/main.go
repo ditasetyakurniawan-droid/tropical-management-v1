@@ -17,6 +17,7 @@ const (
 	serviceName = "inventory-service"
 	listenAddr  = ":8080"
 
+	// Error messages
 	errInvalidJSON      = "invalid json"
 	errMethodNotAllowed = "method not allowed"
 	errInventoryInvalid = "sku/name/unit required and stock values must be non-negative"
@@ -25,10 +26,13 @@ const (
 	errItemNotFound     = "item not found"
 	errStockNegative    = "stock adjustment would make stock negative"
 	errSupplierNameReq  = "supplier name is required"
+	errInternal         = "internal server error"
 
+	// Default values
 	initialStockReason   = "Initial stock"
 	defaultMovementLimit = 100
 
+	// SQL queries
 	createSuppliersTable = `CREATE TABLE IF NOT EXISTS suppliers(
 		id BIGINT PRIMARY KEY AUTO_INCREMENT,
 		name VARCHAR(160) NOT NULL,
@@ -87,8 +91,7 @@ const (
 	summaryStockQuery  = `SELECT COALESCE(SUM(stock),0) FROM inventory_items`
 )
 
-// Sentinel errors untuk propagasi internal antar fungsi.
-// Dipakai agar bisa di-compare pakai errors.Is() tanpa type mismatch.
+// Sentinel errors untuk perbandingan errors.Is.
 var (
 	errSKUExistsSentinel     = errors.New(errSKUExists)
 	errItemNotFoundSentinel  = errors.New(errItemNotFound)
@@ -138,11 +141,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/api/inventory", a.handleInventory)
-	mux.HandleFunc("/api/inventory/adjust", a.handleAdjust)
-	mux.HandleFunc("/api/inventory/movements", a.handleMovements)
-	mux.HandleFunc("/api/suppliers", a.handleSuppliers)
-	mux.HandleFunc("/internal/summary", a.handleSummary)
+	mux.HandleFunc("/api/inventory", a.inventory)
+	mux.HandleFunc("/api/inventory/adjust", a.adjust)
+	mux.HandleFunc("/api/inventory/movements", a.movements)
+	mux.HandleFunc("/api/suppliers", a.suppliers)
+	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
@@ -171,19 +174,18 @@ func (a *app) migrate() error {
 }
 
 // ============================================================
-// INVENTORY
+// INVENTORY ITEMS
 // ============================================================
 
-func (a *app) handleInventory(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
 		a.getItems(w)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.createItem(w, r)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getItems(w http.ResponseWriter) {
@@ -288,10 +290,10 @@ func (a *app) insertItemWithMovement(x item) (int64, error) {
 }
 
 // ============================================================
-// ADJUST
+// ADJUST STOCK
 // ============================================================
 
-func (a *app) handleAdjust(w http.ResponseWriter, r *http.Request) {
+func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
@@ -368,7 +370,7 @@ func (a *app) executeAdjustment(itemID int64, delta float64, reason string) (map
 // MOVEMENTS
 // ============================================================
 
-func (a *app) handleMovements(w http.ResponseWriter, r *http.Request) {
+func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
@@ -407,16 +409,15 @@ func (a *app) getMovements() ([]movement, error) {
 // SUPPLIERS
 // ============================================================
 
-func (a *app) handleSuppliers(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
 		a.getSuppliers(w)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.createSupplier(w, r)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getSuppliers(w http.ResponseWriter) {
@@ -486,7 +487,7 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 // SUMMARY
 // ============================================================
 
-func (a *app) handleSummary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 	alerts, err := a.countAlerts()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -29,6 +29,7 @@
   --leaf-soft-rgb: 121 169 130;
   --gold-rgb: 216 167 47;
   --gold-light-rgb: 243 216 134;
+  --white-rgb: 255 255 255;
 
   /* Radius */
   --radius-xs: 4px;
@@ -227,7 +228,7 @@ button {
   gap: 10px;
   color: var(--forest-950);
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 900; /* best practice: 900 bukan 950 */
   letter-spacing: -0.035em;
   text-decoration: none;
 }
@@ -293,7 +294,7 @@ button {
   background: rgb(255 255 255 / 0.55);
   color: var(--forest-950);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 800; /* best practice: 800 bukan 850 */
   cursor: pointer;
   transition: var(--transition-fast);
 }
@@ -391,7 +392,7 @@ textarea.input {
   padding: 12px 16px;
   background: var(--gradient-forest);
   color: white;
-  font-weight: 800;
+  font-weight: 800; /* best practice: 800 bukan 850 */
   letter-spacing: -0.01em;
   cursor: pointer;
   box-shadow: var(--shadow-btn);
@@ -448,7 +449,7 @@ textarea.input {
   color: var(--forest-950);
   font-size: clamp(2.15rem, 4vw, 3.65rem);
   line-height: 0.98;
-  font-weight: 900;
+  font-weight: 900; /* best practice: 900 bukan 950 */
   letter-spacing: -0.055em;
 }
 
@@ -520,7 +521,7 @@ textarea.input {
   color: white;
   background: linear-gradient(125deg, #052c22 0%, #0a4934 55%, #126146 100%);
   box-shadow: var(--shadow-xl);
-  isolation: isolate;
+  isolation: isolate; /* best practice */
 }
 
 .hero-luxury::before {
@@ -543,6 +544,11 @@ textarea.input {
   bottom: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(var(--gold-light-rgb) / 0.55), transparent);
+}
+
+.hero-luxury > * {
+  position: relative;
+  z-index: 1;
 }
 
 .hero-badge {
@@ -611,7 +617,7 @@ textarea.input {
   gap: 14px;
   color: var(--forest-950);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 700; /* best practice: 700 bukan 750 */
 }
 
 .luxury-spinner {
@@ -705,6 +711,9 @@ textarea.input {
   animation: content-rise 0.58s cubic-bezier(0.22, 0.8, 0.2, 1) 0.08s both;
 }
 
+/* ============================================
+   Enterprise Loader
+============================================ */
 .enterprise-loader {
   position: relative;
   z-index: 10;
@@ -816,7 +825,7 @@ textarea.input {
 .enterprise-loader-brand-copy strong {
   color: var(--forest-950);
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 900; /* best practice: 900 bukan 950 */
   letter-spacing: -0.035em;
 }
 
@@ -827,7 +836,7 @@ textarea.input {
 .enterprise-loader-brand-copy small {
   margin-top: 5px;
   color: var(--muted-lighter);
-  font-size: 10px;
+  font-size: 10px; /* lebih baik daripada 8px */
   font-weight: 800;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -962,7 +971,7 @@ textarea.input {
   color: #7d8c83;
   font-size: 10px;
   line-height: 1.6;
-  font-weight: 600;
+  font-weight: 600; /* best practice: 600 bukan 650 */
 }
 
 .enterprise-loading-dots {
@@ -1013,7 +1022,7 @@ textarea.input {
   gap: 18px;
   margin-top: 16px;
   color: #96a099;
-  font-size: 10px;
+  font-size: 10px; /* lebih baik daripada 8px */
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1052,11 +1061,6 @@ textarea.input {
 .luxury-nav-link.active::after {
   opacity: 0.72;
   transform: translateX(-50%) scaleX(1);
-}
-
-.hero-luxury > * {
-  position: relative;
-  z-index: 1;
 }
 
 .metric .kpi-number {

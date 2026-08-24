@@ -20,10 +20,12 @@ const (
 	dateFormat            = "2006-01-02"
 	defaultSalesListLimit = 100
 
+	// Error messages
 	errInvalidJSON      = "invalid json"
 	errMethodNotAllowed = "method not allowed"
 	errInvalidSalesData = "invalid sales data"
 
+	// SQL queries
 	createSalesTable = `CREATE TABLE IF NOT EXISTS sales_entries(
 		id BIGINT PRIMARY KEY AUTO_INCREMENT,
 		business_date DATE NOT NULL,
@@ -44,7 +46,9 @@ const (
 		FROM sales_entries WHERE business_date = CURDATE()`
 )
 
-type app struct{ db *sql.DB }
+type app struct {
+	db *sql.DB
+}
 
 type sale struct {
 	ID           int64     `json:"id"`
@@ -69,8 +73,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/api/sales", a.handleSales)
-	mux.HandleFunc("/internal/summary", a.handleSummary)
+	mux.HandleFunc("/api/sales", a.sales)
+	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
@@ -96,16 +100,15 @@ func (a *app) migrate() error {
 // SALES
 // ============================================================
 
-func (a *app) handleSales(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+func (a *app) sales(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
 		a.getSales(w)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.createSale(w, r)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getSales(w http.ResponseWriter) {
@@ -177,7 +180,7 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 // SUMMARY
 // ============================================================
 
-func (a *app) handleSummary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 	revenue, orders, err := a.getTodaySummary()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -22,10 +22,12 @@ const (
 	serviceName = "chat-service"
 	listenAddr  = ":8080"
 
+	// Role
 	roleAdmin   = "admin"
 	roleAuditor = "auditor"
 	roleStaff   = "staff"
 
+	// Error messages
 	errMethodNotAllowed     = "method not allowed"
 	errInvalidJSON          = "invalid json"
 	errMessageRequired      = "message is required"
@@ -35,9 +37,11 @@ const (
 	errStreamingUnsupported = "streaming unsupported"
 	errPersistMessage       = "failed to persist chat message"
 
+	// Limits
 	defaultMessageLimit = 100
 	maxMessageLimit     = 200
 
+	// SQL queries
 	createChatMessagesTable = `CREATE TABLE IF NOT EXISTS chat_messages (
 		id BIGINT PRIMARY KEY AUTO_INCREMENT,
 		user_id VARCHAR(64) NOT NULL,
@@ -181,15 +185,14 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		a.getMessages(w, r)
-		return
-	}
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		a.postMessage(w, r, userID, userName, role)
-		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
-	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 }
 
 func (a *app) getMessages(w http.ResponseWriter, r *http.Request) {
