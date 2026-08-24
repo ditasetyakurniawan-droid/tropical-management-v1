@@ -72,17 +72,19 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{
-			"status":  "ok",
-			"service": serviceName,
-		})
-	})
+	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/api/sales", a.sales)
 	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"service": serviceName,
+	})
 }
 
 // writeError mengirimkan JSON error yang konsisten.
@@ -95,75 +97,93 @@ func (a *app) migrate() error {
 	return err
 }
 
+// ============================================================
+// SALES
+// ============================================================
+
 func (a *app) sales(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(selectSalesQuery, defaultSalesListLimit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		out := []sale{}
-		for rows.Next() {
-			var x sale
-			if err := rows.Scan(&x.ID, &x.BusinessDate, &x.Orders, &x.Revenue, &x.Channel, &x.CreatedAt); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			out = append(out, x)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		httpx.JSON(w, http.StatusOK, out)
-
+		a.getSales(w)
 	case http.MethodPost:
-		var x sale
-		if err := httpx.DecodeJSON(r, &x); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-
-		x.BusinessDate = strings.TrimSpace(x.BusinessDate)
-		if x.BusinessDate == "" {
-			x.BusinessDate = time.Now().Format(dateFormat)
-		}
-
-		x.Channel = strings.TrimSpace(x.Channel)
-		if x.Channel == "" {
-			x.Channel = defaultChannel
-		}
-
-		res, err := a.db.Exec(insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidSalesData)
-			return
-		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		x.ID = id
-		x.CreatedAt = time.Now()
-		httpx.JSON(w, http.StatusCreated, x)
-
+		a.createSale(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
-	var revenue float64
-	var orders int
+func (a *app) getSales(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectSalesQuery, defaultSalesListLimit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
 
-	if err := a.db.QueryRow(summaryQuery).Scan(&revenue, &orders); err != nil {
+	out, err := scanSales(rows)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func scanSales(rows *sql.Rows) ([]sale, error) {
+	out := []sale{}
+	for rows.Next() {
+		var x sale
+		if err := rows.Scan(&x.ID, &x.BusinessDate, &x.Orders, &x.Revenue, &x.Channel, &x.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
+	var x sale
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	x.BusinessDate = strings.TrimSpace(x.BusinessDate)
+	if x.BusinessDate == "" {
+		x.BusinessDate = time.Now().Format(dateFormat)
+	}
+
+	x.Channel = strings.TrimSpace(x.Channel)
+	if x.Channel == "" {
+		x.Channel = defaultChannel
+	}
+
+	res, err := a.db.Exec(insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidSalesData)
+		return
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	x.ID = id
+	x.CreatedAt = time.Now()
+	httpx.JSON(w, http.StatusCreated, x)
+}
+
+// ============================================================
+// SUMMARY
+// ============================================================
+
+func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
+	revenue, orders, err := a.getTodaySummary()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -172,4 +192,11 @@ func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 		"sales_today":  revenue,
 		"orders_today": orders,
 	})
+}
+
+func (a *app) getTodaySummary() (float64, int, error) {
+	var revenue float64
+	var orders int
+	err := a.db.QueryRow(summaryQuery).Scan(&revenue, &orders)
+	return revenue, orders, err
 }

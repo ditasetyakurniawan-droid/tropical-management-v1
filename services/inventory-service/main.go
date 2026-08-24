@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ const (
 	errSupplierNameReq  = "supplier name is required"
 	errInternal         = "internal server error"
 
+	// Default values
 	initialStockReason   = "Initial stock"
 	defaultMovementLimit = 100
 
@@ -89,6 +91,13 @@ const (
 	summaryStockQuery  = `SELECT COALESCE(SUM(stock),0) FROM inventory_items`
 )
 
+// Sentinel errors untuk perbandingan errors.Is.
+var (
+	errSKUExistsSentinel     = errors.New(errSKUExists)
+	errItemNotFoundSentinel  = errors.New(errItemNotFound)
+	errStockNegativeSentinel = errors.New(errStockNegative)
+)
+
 type app struct{ db *sql.DB }
 
 type item struct {
@@ -131,9 +140,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-	})
+	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/api/inventory", a.inventory)
 	mux.HandleFunc("/api/inventory/adjust", a.adjust)
 	mux.HandleFunc("/api/inventory/movements", a.movements)
@@ -144,7 +151,10 @@ func main() {
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }
 
-// writeError mengirimkan JSON error yang konsisten.
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	httpx.JSON(w, status, map[string]string{"error": msg})
 }
@@ -163,87 +173,125 @@ func (a *app) migrate() error {
 	return nil
 }
 
+// ============================================================
+// INVENTORY ITEMS
+// ============================================================
+
 func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(selectItemsQuery)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		out := []item{}
-		for rows.Next() {
-			var x item
-			if err := rows.Scan(&x.ID, &x.SKU, &x.Name, &x.Unit, &x.Stock, &x.ReorderLevel, &x.SupplierID, &x.UpdatedAt); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			out = append(out, x)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, out)
-
+		a.getItems(w)
 	case http.MethodPost:
-		var x item
-		if err := httpx.DecodeJSON(r, &x); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-
-		x.SKU = strings.TrimSpace(x.SKU)
-		x.Name = strings.TrimSpace(x.Name)
-		x.Unit = strings.TrimSpace(x.Unit)
-
-		if x.SKU == "" || x.Name == "" || x.Unit == "" || x.Stock < 0 || x.ReorderLevel < 0 {
-			writeError(w, http.StatusBadRequest, errInventoryInvalid)
-			return
-		}
-
-		// Gunakan transaksi agar insert item + movement awal bersifat atomik
-		tx, err := a.db.Begin()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer tx.Rollback()
-
-		res, err := tx.Exec(insertItemQuery, x.SKU, x.Name, x.Unit, x.Stock, x.ReorderLevel, x.SupplierID)
-		if err != nil {
-			writeError(w, http.StatusConflict, errSKUExists)
-			return
-		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		if x.Stock > 0 {
-			if _, err := tx.Exec(insertMovementQuery, id, x.Stock, initialStockReason); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		x.ID = id
-		x.UpdatedAt = time.Now()
-		httpx.JSON(w, http.StatusCreated, x)
-
+		a.createItem(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
+
+func (a *app) getItems(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectItemsQuery)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out, err := scanItems(rows)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func scanItems(rows *sql.Rows) ([]item, error) {
+	out := []item{}
+	for rows.Next() {
+		var x item
+		if err := rows.Scan(&x.ID, &x.SKU, &x.Name, &x.Unit, &x.Stock, &x.ReorderLevel, &x.SupplierID, &x.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (a *app) createItem(w http.ResponseWriter, r *http.Request) {
+	var x item
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	x.SKU = strings.TrimSpace(x.SKU)
+	x.Name = strings.TrimSpace(x.Name)
+	x.Unit = strings.TrimSpace(x.Unit)
+
+	if errMsg := validateItem(x); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	id, err := a.insertItemWithMovement(x)
+	if err != nil {
+		if errors.Is(err, errSKUExistsSentinel) {
+			writeError(w, http.StatusConflict, errSKUExists)
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	x.ID = id
+	x.UpdatedAt = time.Now()
+	httpx.JSON(w, http.StatusCreated, x)
+}
+
+func validateItem(x item) string {
+	if x.SKU == "" || x.Name == "" || x.Unit == "" {
+		return errInventoryInvalid
+	}
+	if x.Stock < 0 || x.ReorderLevel < 0 {
+		return errInventoryInvalid
+	}
+	return ""
+}
+
+func (a *app) insertItemWithMovement(x item) (int64, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(insertItemQuery, x.SKU, x.Name, x.Unit, x.Stock, x.ReorderLevel, x.SupplierID)
+	if err != nil {
+		return 0, errSKUExistsSentinel
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	if x.Stock > 0 {
+		if _, err := tx.Exec(insertMovementQuery, id, x.Stock, initialStockReason); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// ============================================================
+// ADJUST STOCK
+// ============================================================
 
 func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -261,52 +309,66 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.db.Begin()
+	result, err := a.executeAdjustment(in.ItemID, in.Delta, in.Reason)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer tx.Rollback()
-
-	var current float64
-	if err := tx.QueryRow(selectStockForUpdateQuery, in.ItemID).Scan(&current); err != nil {
-		if err == sql.ErrNoRows {
+		switch {
+		case errors.Is(err, errItemNotFoundSentinel):
 			writeError(w, http.StatusNotFound, errItemNotFound)
-		} else {
+		case errors.Is(err, errStockNegativeSentinel):
+			writeError(w, http.StatusBadRequest, errStockNegative)
+		default:
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
 	}
 
-	newStock := current + in.Delta
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+func (a *app) executeAdjustment(itemID int64, delta float64, reason string) (map[string]any, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var current float64
+	if err := tx.QueryRow(selectStockForUpdateQuery, itemID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errItemNotFoundSentinel
+		}
+		return nil, err
+	}
+
+	newStock := current + delta
 	if newStock < 0 {
-		writeError(w, http.StatusBadRequest, errStockNegative)
-		return
+		return nil, errStockNegativeSentinel
 	}
 
-	if _, err := tx.Exec(updateStockQuery, newStock, in.ItemID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if _, err := tx.Exec(updateStockQuery, newStock, itemID); err != nil {
+		return nil, err
 	}
 
-	reason := strings.TrimSpace(in.Reason)
-	if _, err := tx.Exec(insertMovementQuery, in.ItemID, in.Delta, reason); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	reason = strings.TrimSpace(reason)
+	if _, err := tx.Exec(insertMovementQuery, itemID, delta, reason); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"item_id":     in.ItemID,
-		"adjusted_by": in.Delta,
+	return map[string]any{
+		"item_id":     itemID,
+		"adjusted_by": delta,
 		"stock":       newStock,
 		"reason":      reason,
-	})
+	}, nil
 }
+
+// ============================================================
+// MOVEMENTS
+// ============================================================
 
 func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -314,10 +376,18 @@ func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := a.db.Query(selectMovementsQuery, defaultMovementLimit)
+	out, err := a.getMovements()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (a *app) getMovements() ([]movement, error) {
+	rows, err := a.db.Query(selectMovementsQuery, defaultMovementLimit)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -325,93 +395,113 @@ func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var x movement
 		if err := rows.Scan(&x.ID, &x.ItemID, &x.ItemName, &x.Delta, &x.Reason, &x.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, err
 		}
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
-
-	httpx.JSON(w, http.StatusOK, out)
+	return out, nil
 }
+
+// ============================================================
+// SUPPLIERS
+// ============================================================
 
 func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(selectSuppliersQuery)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		out := []supplier{}
-		for rows.Next() {
-			var x supplier
-			if err := rows.Scan(&x.ID, &x.Name, &x.Contact, &x.Phone); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			out = append(out, x)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, out)
-
+		a.getSuppliers(w)
 	case http.MethodPost:
-		var x supplier
-		if err := httpx.DecodeJSON(r, &x); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-
-		x.Name = strings.TrimSpace(x.Name)
-		x.Contact = strings.TrimSpace(x.Contact)
-		x.Phone = strings.TrimSpace(x.Phone)
-
-		if x.Name == "" {
-			writeError(w, http.StatusBadRequest, errSupplierNameReq)
-			return
-		}
-
-		res, err := a.db.Exec(insertSupplierQuery, x.Name, x.Contact, x.Phone)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		x.ID = id
-
-		httpx.JSON(w, http.StatusCreated, x)
-
+		a.createSupplier(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
-	var alerts, total int
-	var stockValue float64
+func (a *app) getSuppliers(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectSuppliersQuery)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
 
-	if err := a.db.QueryRow(summaryAlertsQuery).Scan(&alerts); err != nil {
+	out, err := scanSuppliers(rows)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.QueryRow(summaryTotalQuery).Scan(&total); err != nil {
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func scanSuppliers(rows *sql.Rows) ([]supplier, error) {
+	out := []supplier{}
+	for rows.Next() {
+		var x supplier
+		if err := rows.Scan(&x.ID, &x.Name, &x.Contact, &x.Phone); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
+	var x supplier
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	x.Name = strings.TrimSpace(x.Name)
+	x.Contact = strings.TrimSpace(x.Contact)
+	x.Phone = strings.TrimSpace(x.Phone)
+
+	if x.Name == "" {
+		writeError(w, http.StatusBadRequest, errSupplierNameReq)
+		return
+	}
+
+	res, err := a.db.Exec(insertSupplierQuery, x.Name, x.Contact, x.Phone)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.QueryRow(summaryStockQuery).Scan(&stockValue); err != nil {
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	x.ID = id
+
+	httpx.JSON(w, http.StatusCreated, x)
+}
+
+// ============================================================
+// SUMMARY
+// ============================================================
+
+func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
+	alerts, err := a.countAlerts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	total, err := a.countTotalItems()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	stockValue, err := a.sumStock()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -421,4 +511,22 @@ func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 		"total_items":       total,
 		"total_stock_units": stockValue,
 	})
+}
+
+func (a *app) countAlerts() (int, error) {
+	var n int
+	err := a.db.QueryRow(summaryAlertsQuery).Scan(&n)
+	return n, err
+}
+
+func (a *app) countTotalItems() (int, error) {
+	var n int
+	err := a.db.QueryRow(summaryTotalQuery).Scan(&n)
+	return n, err
+}
+
+func (a *app) sumStock() (float64, error) {
+	var v float64
+	err := a.db.QueryRow(summaryStockQuery).Scan(&v)
+	return v, err
 }

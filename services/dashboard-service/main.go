@@ -18,6 +18,8 @@ const (
 	listenAddr                 = ":8080"
 	requestTimeout             = 3 * time.Second
 
+	summaryPath = "/internal/summary"
+
 	errSalesUnavailable     = "sales service unavailable"
 	errAuditUnavailable     = "audit service unavailable"
 	errInventoryUnavailable = "inventory service unavailable"
@@ -65,16 +67,18 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{
-			"status":  "ok",
-			"service": serviceName,
-		})
-	})
-	mux.HandleFunc("/api/dashboard", c.dashboard)
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/api/dashboard", c.handleDashboard)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"service": serviceName,
+	})
 }
 
 // writeError mengirimkan JSON error yang konsisten.
@@ -101,37 +105,60 @@ func (c *dashboardClient) fetchJSON(url string, dest any) error {
 	return nil
 }
 
-func (c *dashboardClient) dashboard(w http.ResponseWriter, _ *http.Request) {
-	var sales salesSummary
-	var audit auditSummary
-	var inventory inventorySummary
+// ============================================================
+// DASHBOARD
+// ============================================================
 
-	if err := c.fetchJSON(c.sales+"/internal/summary", &sales); err != nil {
+func (c *dashboardClient) handleDashboard(w http.ResponseWriter, _ *http.Request) {
+	sales, err := c.fetchSalesSummary()
+	if err != nil {
 		log.Printf("sales service error: %v", err)
 		writeError(w, http.StatusBadGateway, errSalesUnavailable)
 		return
 	}
 
-	if err := c.fetchJSON(c.audit+"/internal/summary", &audit); err != nil {
+	audit, err := c.fetchAuditSummary()
+	if err != nil {
 		log.Printf("audit service error: %v", err)
 		writeError(w, http.StatusBadGateway, errAuditUnavailable)
 		return
 	}
 
-	if err := c.fetchJSON(c.inventory+"/internal/summary", &inventory); err != nil {
+	inventory, err := c.fetchInventorySummary()
+	if err != nil {
 		log.Printf("inventory service error: %v", err)
 		writeError(w, http.StatusBadGateway, errInventoryUnavailable)
 		return
 	}
 
-	out := dashboardResponse{
-		SalesToday:      sales.SalesToday,
-		OrdersToday:     sales.OrdersToday,
-		AuditScore:      audit.AuditScore,
-		OpenIssues:      audit.OpenIssues,
-		InventoryAlerts: inventory.InventoryAlerts,
-		TotalItems:      inventory.TotalItems,
-	}
+	httpx.JSON(w, http.StatusOK, buildDashboardResponse(sales, audit, inventory))
+}
 
-	httpx.JSON(w, http.StatusOK, out)
+func (c *dashboardClient) fetchSalesSummary() (salesSummary, error) {
+	var s salesSummary
+	err := c.fetchJSON(c.sales+summaryPath, &s)
+	return s, err
+}
+
+func (c *dashboardClient) fetchAuditSummary() (auditSummary, error) {
+	var a auditSummary
+	err := c.fetchJSON(c.audit+summaryPath, &a)
+	return a, err
+}
+
+func (c *dashboardClient) fetchInventorySummary() (inventorySummary, error) {
+	var i inventorySummary
+	err := c.fetchJSON(c.inventory+summaryPath, &i)
+	return i, err
+}
+
+func buildDashboardResponse(s salesSummary, a auditSummary, i inventorySummary) dashboardResponse {
+	return dashboardResponse{
+		SalesToday:      s.SalesToday,
+		OrdersToday:     s.OrdersToday,
+		AuditScore:      a.AuditScore,
+		OpenIssues:      a.OpenIssues,
+		InventoryAlerts: i.InventoryAlerts,
+		TotalItems:      i.TotalItems,
+	}
 }

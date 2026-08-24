@@ -16,26 +16,33 @@ const LEAF_VARIANTS = [
 ];
 const LEAF_VEIN_PATH = "M10 34C18 26 24 18 31 8";
 
+// Data daun statis dengan id unik untuk key (bukan index array)
+const LEAVES = Array.from({ length: LEAF_COUNT }, (_, index) => {
+  const { variant, path } = LEAF_VARIANTS[index % LEAF_VARIANTS.length];
+  return {
+    id: `leaf-${index + 1}`,
+    variant,
+    path,
+  };
+});
+
 export default function TropicalAtmosphere() {
   return (
     <div className="botanical-atmosphere" aria-hidden="true">
       <div className="botanical-glow botanical-glow-one" />
       <div className="botanical-glow botanical-glow-two" />
 
-      {Array.from({ length: LEAF_COUNT }).map((_, index) => {
-        const { variant, path } = LEAF_VARIANTS[index % LEAF_VARIANTS.length];
-        return (
-          <svg
-            key={index}
-            className={`floating-leaf ${variant} leaf-${index + 1}`}
-            viewBox="0 0 44 44"
-            role="presentation"
-          >
-            <path d={path} />
-            <path className="leaf-vein" d={LEAF_VEIN_PATH} />
-          </svg>
-        );
-      })}
+      {LEAVES.map((leaf) => (
+        <svg
+          key={leaf.id}
+          className={`floating-leaf ${leaf.variant} ${leaf.id}`}
+          viewBox="0 0 44 44"
+          role="presentation"
+        >
+          <path d={leaf.path} />
+          <path className="leaf-vein" d={LEAF_VEIN_PATH} />
+        </svg>
+      ))}
     </div>
   );
 }

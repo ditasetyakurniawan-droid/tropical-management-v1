@@ -15,6 +15,7 @@
   --gold-pale: #f8dda0;
   --cream: #f5f5ed;
   --ivory: #fffef8;
+  --ivory-rgb: 255 254 248;
   --ink: #14251d;
   --muted: #64746c;
   --muted-light: #97a39c;
@@ -117,6 +118,7 @@ button {
   opacity: 0.22;
   background-image: radial-gradient(rgb(var(--forest-950-rgb) / 0.16) 0.65px, transparent 0.65px);
   background-size: 12px 12px;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 72%);
   mask-image: linear-gradient(to bottom, black, transparent 72%);
 }
 
@@ -215,6 +217,7 @@ button {
   z-index: 40;
   border-bottom: 1px solid rgb(var(--forest-950-rgb) / 0.08);
   background: rgb(var(--ivory-rgb) / 0.78);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
   backdrop-filter: blur(22px) saturate(150%);
   box-shadow: var(--shadow-nav);
 }
@@ -225,7 +228,7 @@ button {
   gap: 10px;
   color: var(--forest-950);
   font-size: 14px;
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: -0.035em;
   text-decoration: none;
 }
@@ -291,7 +294,7 @@ button {
   background: rgb(255 255 255 / 0.55);
   color: var(--forest-950);
   font-size: 11px;
-  font-weight: 850;
+  font-weight: 800;
   cursor: pointer;
   transition: var(--transition-fast);
 }
@@ -310,16 +313,18 @@ button {
   border: 1px solid rgb(var(--forest-950-rgb) / 0.09);
   border-radius: var(--radius-2xl);
   background: linear-gradient(150deg, rgb(255 255 255 / 0.94), rgb(255 254 248 / 0.82));
-  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-lg);
 }
 
 .card-hover {
   transition: transform var(--transition-base), box-shadow var(--transition-base), border-color var(--transition-base);
+  will-change: transform;
 }
 
 .card-hover:hover {
-  transform: translateY(-3px);
+  transform: translateY(-4px) scale(1.004);
   border-color: rgb(var(--gold-rgb) / 0.25);
   box-shadow: var(--shadow-card-hover);
 }
@@ -387,7 +392,7 @@ textarea.input {
   padding: 12px 16px;
   background: var(--gradient-forest);
   color: white;
-  font-weight: 850;
+  font-weight: 800;
   letter-spacing: -0.01em;
   cursor: pointer;
   box-shadow: var(--shadow-btn);
@@ -435,7 +440,7 @@ textarea.input {
 .eyebrow {
   color: #b37812;
   font-size: 11px;
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: 0.23em;
   text-transform: uppercase;
 }
@@ -444,7 +449,7 @@ textarea.input {
   color: var(--forest-950);
   font-size: clamp(2.15rem, 4vw, 3.65rem);
   line-height: 0.98;
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: -0.055em;
 }
 
@@ -516,6 +521,7 @@ textarea.input {
   color: white;
   background: linear-gradient(125deg, #052c22 0%, #0a4934 55%, #126146 100%);
   box-shadow: var(--shadow-xl);
+  isolation: isolate;
 }
 
 .hero-luxury::before {
@@ -527,6 +533,7 @@ textarea.input {
   top: -220px;
   border-radius: var(--radius-pill);
   background: radial-gradient(circle, rgb(var(--gold-light-rgb) / 0.28), transparent 67%);
+  animation: hero-glow-drift 7s ease-in-out infinite;
 }
 
 .hero-luxury::after {
@@ -537,6 +544,11 @@ textarea.input {
   bottom: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(var(--gold-light-rgb) / 0.55), transparent);
+}
+
+.hero-luxury > * {
+  position: relative;
+  z-index: 1;
 }
 
 .hero-badge {
@@ -575,6 +587,8 @@ textarea.input {
   background: linear-gradient(180deg, var(--gold-light), var(--gold));
   box-shadow: var(--shadow-xs);
   transition: height var(--transition-slow);
+  transform-origin: bottom;
+  animation: bar-reveal 0.6s cubic-bezier(0.22, 0.8, 0.2, 1) both;
 }
 
 .progress-track {
@@ -588,6 +602,8 @@ textarea.input {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--leaf), var(--gold));
+  transform-origin: left;
+  animation: progress-reveal 0.65s cubic-bezier(0.22, 0.8, 0.2, 1) both;
 }
 
 /* ============================================
@@ -601,7 +617,7 @@ textarea.input {
   gap: 14px;
   color: var(--forest-950);
   font-size: 13px;
-  font-weight: 750;
+  font-weight: 700;
 }
 
 .luxury-spinner {
@@ -678,6 +694,7 @@ textarea.input {
   place-items: center;
   padding: 22px;
   background: rgb(247 248 240 / 0.72);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
   backdrop-filter: blur(18px) saturate(135%);
   animation: route-overlay-in 0.18s ease both;
 }
@@ -694,6 +711,9 @@ textarea.input {
   animation: content-rise 0.58s cubic-bezier(0.22, 0.8, 0.2, 1) 0.08s both;
 }
 
+/* ============================================
+   Enterprise Loader
+============================================ */
 .enterprise-loader {
   position: relative;
   z-index: 10;
@@ -716,8 +736,9 @@ textarea.input {
   border: 1px solid rgb(var(--forest-950-rgb) / 0.1);
   border-radius: var(--radius-3xl);
   background: linear-gradient(150deg, rgb(255 255 255 / 0.97), rgb(250 250 241 / 0.91));
-  box-shadow: 0 34px 90px rgb(var(--forest-950-rgb) / 0.17), inset 0 1px rgb(255 255 255 / 0.95);
+  -webkit-backdrop-filter: blur(24px);
   backdrop-filter: blur(24px);
+  box-shadow: 0 34px 90px rgb(var(--forest-950-rgb) / 0.17), inset 0 1px rgb(255 255 255 / 0.95);
 }
 
 .enterprise-loader-panel::before {
@@ -737,6 +758,7 @@ textarea.input {
     linear-gradient(rgb(var(--forest-950-rgb) / 0.07) 1px, transparent 1px),
     linear-gradient(90deg, rgb(var(--forest-950-rgb) / 0.07) 1px, transparent 1px);
   background-size: 32px 32px;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 78%);
   mask-image: linear-gradient(to bottom, black, transparent 78%);
 }
 
@@ -803,7 +825,7 @@ textarea.input {
 .enterprise-loader-brand-copy strong {
   color: var(--forest-950);
   font-size: 13px;
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: -0.035em;
 }
 
@@ -814,8 +836,8 @@ textarea.input {
 .enterprise-loader-brand-copy small {
   margin-top: 5px;
   color: var(--muted-lighter);
-  font-size: 8px;
-  font-weight: 850;
+  font-size: 10px;
+  font-weight: 800;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -830,7 +852,7 @@ textarea.input {
   padding: 6px 8px;
   background: rgb(231 246 237 / 0.6);
   color: #42735b;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -949,7 +971,7 @@ textarea.input {
   color: #7d8c83;
   font-size: 10px;
   line-height: 1.6;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .enterprise-loading-dots {
@@ -1000,7 +1022,7 @@ textarea.input {
   gap: 18px;
   margin-top: 16px;
   color: #96a099;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1041,43 +1063,12 @@ textarea.input {
   transform: translateX(-50%) scaleX(1);
 }
 
-.hero-luxury {
-  isolation: isolate;
-}
-
-.hero-luxury > * {
-  position: relative;
-  z-index: 1;
-}
-
-.hero-luxury::before {
-  animation: hero-glow-drift 7s ease-in-out infinite;
-}
-
-.card-hover {
-  will-change: transform;
-}
-
-.card-hover:hover {
-  transform: translateY(-4px) scale(1.004);
-}
-
 .metric .kpi-number {
   transition: transform 0.28s ease;
 }
 
 .metric:hover .kpi-number {
   transform: translateX(2px);
-}
-
-.mini-bar {
-  transform-origin: bottom;
-  animation: bar-reveal 0.6s cubic-bezier(0.22, 0.8, 0.2, 1) both;
-}
-
-.progress-value {
-  transform-origin: left;
-  animation: progress-reveal 0.65s cubic-bezier(0.22, 0.8, 0.2, 1) both;
 }
 
 .btn {

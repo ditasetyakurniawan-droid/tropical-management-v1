@@ -110,9 +110,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-	})
+	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/change-password", a.changePassword)
@@ -120,6 +118,10 @@ func main() {
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
 }
 
 // writeError mengirimkan JSON error yang konsisten.
@@ -302,6 +304,8 @@ func validRole(role string) bool {
 	}
 }
 
+// users adalah entry point untuk /api/users. Setiap HTTP method didelegasikan
+// ke handler-nya sendiri supaya function ini tetap sederhana (cognitive complexity rendah).
 func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
 	if err != nil || claims["role"] != roleAdmin {
@@ -311,117 +315,153 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(selectUsersList)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		result := []user{}
-		for rows.Next() {
-			var u user
-			if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			result = append(result, u)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, result)
-
+		a.usersList(w)
 	case http.MethodPost:
-		var input struct {
-			Name     string `json:"name"`
-			Email    string `json:"email"`
-			Password string `json:"password"`
-			Role     string `json:"role"`
-		}
-		if err := httpx.DecodeJSON(r, &input); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-
-		input.Name = strings.TrimSpace(input.Name)
-		input.Email = normalizeEmail(input.Email)
-		input.Role = strings.ToLower(strings.TrimSpace(input.Role))
-
-		if input.Name == "" || input.Email == "" || len(input.Password) < 8 || !validRole(input.Role) {
-			writeError(w, http.StatusBadRequest, errInvalidUserInput)
-			return
-		}
-
-		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
-			return
-		}
-
-		res, err := a.db.Exec(insertUser, input.Name, input.Email, string(hash), input.Role)
-		if err != nil {
-			writeError(w, http.StatusConflict, errUserAlreadyExists)
-			return
-		}
-		id, _ := res.LastInsertId()
-		httpx.JSON(w, http.StatusCreated, user{
-			ID:     id,
-			Name:   input.Name,
-			Email:  input.Email,
-			Role:   input.Role,
-			Active: true,
-		})
-
+		a.usersCreate(w, r)
 	case http.MethodPatch:
-		var input struct {
-			ID       int64  `json:"id"`
-			Name     string `json:"name"`
-			Role     string `json:"role"`
-			Active   bool   `json:"active"`
-			Password string `json:"password"`
-		}
-		if err := httpx.DecodeJSON(r, &input); err != nil || input.ID == 0 {
-			writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
-			return
-		}
-
-		input.Name = strings.TrimSpace(input.Name)
-		input.Role = strings.ToLower(strings.TrimSpace(input.Role))
-
-		if input.Name == "" || !validRole(input.Role) {
-			writeError(w, http.StatusBadRequest, errNameAndRoleRequired)
-			return
-		}
-		if input.Password != "" && len(input.Password) < 8 {
-			writeError(w, http.StatusBadRequest, errNewPasswordTooShort8)
-			return
-		}
-
-		var err error
-		if input.Password != "" {
-			hash, hashErr := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-			if hashErr != nil {
-				writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
-				return
-			}
-			_, err = a.db.Exec(updateUserWithPassword, input.Name, input.Role, input.Active, string(hash), input.ID)
-		} else {
-			_, err = a.db.Exec(updateUserWithoutPassword, input.Name, input.Role, input.Active, input.ID)
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"id":     input.ID,
-			"name":   input.Name,
-			"role":   input.Role,
-			"active": input.Active,
-		})
-
+		a.usersUpdate(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
+}
+
+// usersList menangani GET /api/users.
+func (a *app) usersList(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectUsersList)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := []user{}
+	for rows.Next() {
+		var u user
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		result = append(result, u)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+// usersCreateInput adalah payload untuk POST /api/users.
+type usersCreateInput struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
+// sanitize membersihkan dan menyeragamkan field input.
+func (in *usersCreateInput) sanitize() {
+	in.Name = strings.TrimSpace(in.Name)
+	in.Email = normalizeEmail(in.Email)
+	in.Role = strings.ToLower(strings.TrimSpace(in.Role))
+}
+
+// valid memeriksa apakah input POST sudah lengkap dan sah.
+func (in usersCreateInput) valid() bool {
+	return in.Name != "" && in.Email != "" && len(in.Password) >= 8 && validRole(in.Role)
+}
+
+// usersCreate menangani POST /api/users.
+func (a *app) usersCreate(w http.ResponseWriter, r *http.Request) {
+	var input usersCreateInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+	input.sanitize()
+	if !input.valid() {
+		writeError(w, http.StatusBadRequest, errInvalidUserInput)
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
+		return
+	}
+
+	res, err := a.db.Exec(insertUser, input.Name, input.Email, string(hash), input.Role)
+	if err != nil {
+		writeError(w, http.StatusConflict, errUserAlreadyExists)
+		return
+	}
+	id, _ := res.LastInsertId()
+	httpx.JSON(w, http.StatusCreated, user{
+		ID:     id,
+		Name:   input.Name,
+		Email:  input.Email,
+		Role:   input.Role,
+		Active: true,
+	})
+}
+
+// usersUpdateInput adalah payload untuk PATCH /api/users.
+type usersUpdateInput struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Active   bool   `json:"active"`
+	Password string `json:"password"`
+}
+
+// sanitize membersihkan dan menyeragamkan field input.
+func (in *usersUpdateInput) sanitize() {
+	in.Name = strings.TrimSpace(in.Name)
+	in.Role = strings.ToLower(strings.TrimSpace(in.Role))
+}
+
+// usersUpdate menangani PATCH /api/users.
+func (a *app) usersUpdate(w http.ResponseWriter, r *http.Request) {
+	var input usersUpdateInput
+	if err := httpx.DecodeJSON(r, &input); err != nil || input.ID == 0 {
+		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
+		return
+	}
+	input.sanitize()
+
+	if input.Name == "" || !validRole(input.Role) {
+		writeError(w, http.StatusBadRequest, errNameAndRoleRequired)
+		return
+	}
+	if input.Password != "" && len(input.Password) < 8 {
+		writeError(w, http.StatusBadRequest, errNewPasswordTooShort8)
+		return
+	}
+
+	if err := a.applyUserUpdate(input); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id":     input.ID,
+		"name":   input.Name,
+		"role":   input.Role,
+		"active": input.Active,
+	})
+}
+
+// applyUserUpdate menjalankan query UPDATE yang sesuai, tergantung ada tidaknya
+// password baru.
+func (a *app) applyUserUpdate(input usersUpdateInput) error {
+	if input.Password == "" {
+		_, err := a.db.Exec(updateUserWithoutPassword, input.Name, input.Role, input.Active, input.ID)
+		return err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(updateUserWithPassword, input.Name, input.Role, input.Active, string(hash), input.ID)
+	return err
 }

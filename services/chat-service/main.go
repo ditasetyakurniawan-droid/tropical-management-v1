@@ -123,17 +123,18 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-	})
-	mux.HandleFunc("/api/chat/messages", a.messages)
-	mux.HandleFunc("/api/chat/stream", a.stream)
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/api/chat/messages", a.handleMessages)
+	mux.HandleFunc("/api/chat/stream", a.handleStream)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }
 
-// writeError mengirimkan JSON error secara konsisten.
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	httpx.JSON(w, status, map[string]string{"error": msg})
 }
@@ -173,8 +174,11 @@ func identity(r *http.Request) (userID, userName, role string, err error) {
 	return userID, userName, role, nil
 }
 
-func (a *app) messages(w http.ResponseWriter, r *http.Request) {
-	// Ambil identitas sekali untuk semua method
+// ============================================================
+// MESSAGES
+// ============================================================
+
+func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 	userID, userName, role, err := identity(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
@@ -183,86 +187,117 @@ func (a *app) messages(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		limit := defaultMessageLimit
-		if raw := r.URL.Query().Get("limit"); raw != "" {
-			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= maxMessageLimit {
-				limit = parsed
-			}
-		}
-
-		rows, err := a.db.Query(selectMessagesQuery, limit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		result := make([]chatMessage, 0, limit)
-		for rows.Next() {
-			var msg chatMessage
-			if err := rows.Scan(&msg.ID, &msg.UserID, &msg.UserName, &msg.Role, &msg.Body, &msg.CreatedAt); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			result = append(result, msg)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		// Balik urutan agar kronologis (yang lama dulu)
-		for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
-			result[left], result[right] = result[right], result[left]
-		}
-
-		httpx.JSON(w, http.StatusOK, result)
-
+		a.getMessages(w, r)
 	case http.MethodPost:
-		var input struct {
-			Body string `json:"body"`
-		}
-		if err := httpx.DecodeJSON(r, &input); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-
-		body, err := cleanChatBody(input.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		res, err := a.db.Exec(insertMessageQuery, userID, userName, role, body)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, errPersistMessage)
-			return
-		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, errPersistMessage)
-			return
-		}
-
-		msg := chatMessage{
-			ID:        id,
-			UserID:    userID,
-			UserName:  userName,
-			Role:      role,
-			Body:      body,
-			CreatedAt: time.Now().UTC(),
-		}
-
-		a.broker.publish(msg)
-		httpx.JSON(w, http.StatusCreated, msg)
-
+		a.postMessage(w, r, userID, userName, role)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
-func (a *app) stream(w http.ResponseWriter, r *http.Request) {
+func (a *app) getMessages(w http.ResponseWriter, r *http.Request) {
+	limit := parseMessageLimit(r.URL.Query().Get("limit"))
+
+	rows, err := a.db.Query(selectMessagesQuery, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result, err := scanChatMessages(rows, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	reverseMessages(result)
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+func parseMessageLimit(raw string) int {
+	if raw == "" {
+		return defaultMessageLimit
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 || parsed > maxMessageLimit {
+		return defaultMessageLimit
+	}
+	return parsed
+}
+
+func scanChatMessages(rows *sql.Rows, limit int) ([]chatMessage, error) {
+	result := make([]chatMessage, 0, limit)
+	for rows.Next() {
+		var msg chatMessage
+		if err := rows.Scan(&msg.ID, &msg.UserID, &msg.UserName, &msg.Role, &msg.Body, &msg.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func reverseMessages(msgs []chatMessage) {
+	for left, right := 0, len(msgs)-1; left < right; left, right = left+1, right-1 {
+		msgs[left], msgs[right] = msgs[right], msgs[left]
+	}
+}
+
+func (a *app) postMessage(w http.ResponseWriter, r *http.Request, userID, userName, role string) {
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	body, err := cleanChatBody(input.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	msg, err := a.persistMessage(userID, userName, role, body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errPersistMessage)
+		return
+	}
+
+	a.broker.publish(msg)
+	httpx.JSON(w, http.StatusCreated, msg)
+}
+
+func (a *app) persistMessage(userID, userName, role, body string) (chatMessage, error) {
+	res, err := a.db.Exec(insertMessageQuery, userID, userName, role, body)
+	if err != nil {
+		return chatMessage{}, err
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return chatMessage{}, err
+	}
+
+	return chatMessage{
+		ID:        id,
+		UserID:    userID,
+		UserName:  userName,
+		Role:      role,
+		Body:      body,
+		CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+// ============================================================
+// STREAM
+// ============================================================
+
+func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
@@ -279,10 +314,7 @@ func (a *app) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	setupSSEHeaders(w)
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
@@ -292,6 +324,17 @@ func (a *app) stream(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
 
+	a.runStreamLoop(w, r, flusher, client, heartbeat)
+}
+
+func setupSSEHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+}
+
+func (a *app) runStreamLoop(w http.ResponseWriter, r *http.Request, flusher http.Flusher, client chan chatMessage, heartbeat *time.Ticker) {
 	for {
 		select {
 		case <-r.Context().Done():
