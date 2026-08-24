@@ -43,6 +43,7 @@ pipeline {
                       bash -c '
                         go mod download &&
                         go test -coverprofile=coverage.out ./... &&
+                        sed -i "s|github.com/ditasetyakurniawan-droid/tropical-management-v1/||g" coverage.out &&
                         go vet ./...
                       '
                 '''
