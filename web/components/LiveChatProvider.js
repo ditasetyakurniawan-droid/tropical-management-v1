@@ -19,31 +19,104 @@ const SSE_EVENT_PREFIX = "data:";
 const HISTORY_ENDPOINT = "/api/chat/messages";
 const STREAM_ENDPOINT = "/api/chat/stream";
 
-// Helper untuk membandingkan user ID
 export function isOwnChatMessage(message, currentUser) {
   const currentId = currentUser?.sub ?? currentUser?.id;
-
   if (currentId == null) return false;
   return String(message?.user_id) === String(currentId);
 }
 
-// Helper untuk parsing satu event SSE menjadi objek JSON
 function parseSSEEvent(eventText) {
   if (!eventText) return null;
-
   const data = eventText
     .split("\n")
     .filter((line) => line.startsWith(SSE_EVENT_PREFIX))
     .map((line) => line.slice(SSE_EVENT_PREFIX.length).trim())
     .join("\n");
-
   if (!data) return null;
-
   try {
     return JSON.parse(data);
   } catch {
-    // Abaikan event yang rusak, pertahankan koneksi
     return null;
+  }
+}
+
+// ===== Helper di luar komponen =====
+
+async function loadHistory({ appendMessage, onError, isActive }) {
+  try {
+    const rows = await api(`${HISTORY_ENDPOINT}?limit=${MESSAGE_LIMIT_INITIAL}`);
+    if (!isActive()) return;
+    const history = Array.isArray(rows) ? rows : [];
+    appendMessage(history);
+  } catch (err) {
+    if (isActive()) onError(err?.message || "Gagal memuat riwayat pesan");
+  }
+}
+
+async function connectChatStream({
+  appendMessage,
+  onConnected,
+  onDisconnected,
+  onError,
+  isActive,
+  isStopped,
+}) {
+  const streamController = new AbortController();
+  const authToken = token();
+
+  try {
+    const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+      cache: "no-store",
+      signal: streamController.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    if (!isActive()) return;
+
+    onConnected();
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      if (isStopped() || !isActive()) {
+        reader.cancel();
+        break;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+
+      for (const event of events) {
+        const parsed = parseSSEEvent(event);
+        if (parsed) appendMessage([parsed]);
+      }
+    }
+
+    if (buffer && isActive() && !isStopped()) {
+      const parsed = parseSSEEvent(buffer);
+      if (parsed) appendMessage([parsed]);
+    }
+  } catch (err) {
+    if (isActive() && !isStopped() && err?.name !== "AbortError") {
+      onError("Koneksi chat sedang disambungkan ulang...");
+    }
+  } finally {
+    if (isActive() && !isStopped()) {
+      onDisconnected();
+      window.setTimeout(() => connectChatStream({
+        appendMessage, onConnected, onDisconnected, onError, isActive, isStopped,
+      }), RETRY_DELAY_MS);
+    }
   }
 }
 
@@ -60,21 +133,19 @@ export default function LiveChatProvider({ children }) {
   const [sending, setSending] = useState(false);
 
   const sendingRef = useRef(false);
+  const activeRef = useRef(true);
+  const stoppedRef = useRef(false);
 
-  const appendMessage = useCallback((message) => {
+  const appendMessage = useCallback((incoming) => {
     setMessages((rows) => {
-      if (!message?.id || rows.some((row) => row.id === message.id)) {
-        return rows;
-      }
-
-      return [...rows, message].slice(-MESSAGE_LIMIT_MAX);
+      const valid = incoming.filter((msg) => msg?.id && !rows.some((row) => row.id === msg.id));
+      return [...rows, ...valid].slice(-MESSAGE_LIMIT_MAX);
     });
   }, []);
 
   const sendMessage = useCallback(
     async (body) => {
       const value = String(body ?? "").trim();
-
       if (!value || sendingRef.current) return null;
 
       sendingRef.current = true;
@@ -86,8 +157,7 @@ export default function LiveChatProvider({ children }) {
           method: "POST",
           body: JSON.stringify({ body: value }),
         });
-
-        appendMessage(saved);
+        appendMessage([saved]);
         return saved;
       } catch (err) {
         setError(err?.message || "Gagal mengirim pesan");
@@ -101,105 +171,40 @@ export default function LiveChatProvider({ children }) {
   );
 
   useEffect(() => {
-    let active = true;
-    let stopped = false;
-    let retryTimer = null;
-    let streamController = null;
+    activeRef.current = true;
+    stoppedRef.current = false;
 
     if (!authenticated) {
       setCurrentUser(null);
       setMessages([]);
       setConnected(false);
       setError("");
-
       return () => {
-        active = false;
-        stopped = true;
+        activeRef.current = false;
+        stoppedRef.current = true;
       };
     }
 
     setCurrentUser(sessionUser());
 
-    api(`${HISTORY_ENDPOINT}?limit=${MESSAGE_LIMIT_INITIAL}`)
-      .then((rows) => {
-        if (!active) return;
+    loadHistory({
+      appendMessage,
+      onError: setError,
+      isActive: () => activeRef.current,
+    });
 
-        const history = Array.isArray(rows) ? rows : [];
-        setMessages(history.slice(-MESSAGE_LIMIT_MAX));
-      })
-      .catch((err) => {
-        if (active) {
-          setError(err?.message || "Gagal memuat riwayat pesan");
-        }
-      });
-
-    async function connectToStream() {
-      if (stopped) return;
-
-      streamController = new AbortController();
-      const authToken = token();
-
-      try {
-        const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
-          headers: authToken
-            ? { Authorization: `Bearer ${authToken}` }
-            : undefined,
-          cache: "no-store",
-          signal: streamController.signal,
-        });
-
-        if (!response.ok || !response.body) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        if (active) {
-          setConnected(true);
-          setError("");
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (!stopped && active) {
-          const { done, value } = await reader.read();
-
-          if (done || stopped) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split("\n\n");
-          buffer = events.pop() || "";
-
-          for (const event of events) {
-            const parsed = parseSSEEvent(event);
-            if (parsed) appendMessage(parsed);
-          }
-        }
-
-        if (buffer && active && !stopped) {
-          const parsed = parseSSEEvent(buffer);
-          if (parsed) appendMessage(parsed);
-        }
-      } catch (err) {
-        if (active && !stopped && err?.name !== "AbortError") {
-          setError("Koneksi chat sedang disambungkan ulang...");
-        }
-      } finally {
-        if (active && !stopped) {
-          setConnected(false);
-          retryTimer = window.setTimeout(connectToStream, RETRY_DELAY_MS);
-        }
-      }
-    }
-
-    connectToStream();
+    connectChatStream({
+      appendMessage,
+      onConnected: () => setConnected(true),
+      onDisconnected: () => setConnected(false),
+      onError: setError,
+      isActive: () => activeRef.current,
+      isStopped: () => stoppedRef.current,
+    });
 
     return () => {
-      active = false;
-      stopped = true;
-
-      if (retryTimer) window.clearTimeout(retryTimer);
-      streamController?.abort();
+      activeRef.current = false;
+      stoppedRef.current = true;
     };
   }, [authenticated, appendMessage]);
 
@@ -224,10 +229,8 @@ export default function LiveChatProvider({ children }) {
 
 export function useLiveChat() {
   const context = useContext(LiveChatContext);
-
   if (!context) {
     throw new Error("useLiveChat harus digunakan di dalam LiveChatProvider");
   }
-
   return context;
 }

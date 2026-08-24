@@ -386,6 +386,7 @@ textarea.input {
   color: var(--muted-light);
 }
 
+/* Blok .btn utama + properti dari blok duplikat */
 .btn {
   border: 1px solid rgb(var(--gold-light-rgb) / 0.16);
   border-radius: var(--radius-lg);
@@ -397,6 +398,8 @@ textarea.input {
   cursor: pointer;
   box-shadow: var(--shadow-btn);
   transition: transform var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+  position: relative;   /* dari blok .btn kedua */
+  overflow: hidden;     /* dari blok .btn kedua */
 }
 
 .btn:hover {
@@ -1071,10 +1074,7 @@ textarea.input {
   transform: translateX(2px);
 }
 
-.btn {
-  position: relative;
-  overflow: hidden;
-}
+/* Blok .btn kedua dihapus, properti sudah digabung ke atas */
 
 .btn::after {
   content: "";
