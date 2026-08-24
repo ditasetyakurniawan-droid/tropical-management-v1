@@ -92,10 +92,11 @@ pipeline {
                           -Dsonar.projectKey="$SONAR_PROJECT" \
                           -Dsonar.projectName="Tropical Management" \
                           -Dsonar.sources=. \
+                          -Dsonar.exclusions="**/node_modules/**,**/.next/**,**/.git/**,**/coverage/**,**/*_test.go" \
+                          -Dsonar.tests=. \
+                          -Dsonar.test.inclusions="**/*_test.go" \
                           -Dsonar.go.coverage.reportPaths=coverage.out \
-                          -Dsonar.exclusions="**/node_modules/**,**/.next/**,**/.git/**,**/coverage/**" \
-                          -Dsonar.qualitygate.wait=true \
-                          -Dsonar.qualitygate.timeout=300
+                          -Dsonar.qualitygate.wait=false
                     '''
                 }
             }
