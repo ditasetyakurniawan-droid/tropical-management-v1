@@ -397,6 +397,8 @@ textarea.input {
   cursor: pointer;
   box-shadow: var(--shadow-btn);
   transition: transform var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+  position: relative;
+  overflow: hidden;
 }
 
 .btn:hover {
@@ -1069,11 +1071,6 @@ textarea.input {
 
 .metric:hover .kpi-number {
   transform: translateX(2px);
-}
-
-.btn {
-  position: relative;
-  overflow: hidden;
 }
 
 .btn::after {
