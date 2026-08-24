@@ -16,7 +16,6 @@ const (
 	serviceName = "audit-service"
 	listenAddr  = ":8080"
 
-	// Error messages
 	errInvalidJSON           = "invalid json"
 	errMethodNotAllowed      = "method not allowed"
 	errRestaurantAuditor     = "restaurant and auditor are required"
@@ -26,20 +25,19 @@ const (
 	errInvalidIssueStatus    = "invalid issue status"
 	errIDAndJSONRequired     = "id and valid json required"
 
-	// Severity values
 	severityLow      = "low"
 	severityMedium   = "medium"
 	severityHigh     = "high"
 	severityCritical = "critical"
 
-	// Issue status values
 	statusOpen       = "open"
 	statusInProgress = "in_progress"
 	statusResolved   = "resolved"
 	statusVerified   = "verified"
 	statusClosed     = "closed"
+)
 
-	// SQL queries
+const (
 	createAuditsTable = `CREATE TABLE IF NOT EXISTS audits (
 		id BIGINT PRIMARY KEY AUTO_INCREMENT,
 		restaurant VARCHAR(150) NOT NULL,
@@ -131,18 +129,19 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-	})
-	mux.HandleFunc("/api/audits", a.audits)
-	mux.HandleFunc("/api/issues", a.issues)
-	mux.HandleFunc("/internal/summary", a.summary)
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/api/audits", a.handleAudits)
+	mux.HandleFunc("/api/issues", a.handleIssues)
+	mux.HandleFunc("/internal/summary", a.handleSummary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }
 
-// writeError is a helper to send consistent JSON error responses.
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	httpx.JSON(w, status, map[string]string{"error": msg})
 }
@@ -155,8 +154,6 @@ func (a *app) migrate() error {
 		}
 	}
 
-	// Phase-2 databases already have issues. These ALTERs are restart-safe because
-	// duplicate-column/index errors are intentionally ignored during local migration.
 	alterQueries := []string{
 		`ALTER TABLE issues ADD COLUMN due_date DATE NULL`,
 		`ALTER TABLE issues ADD COLUMN corrective_action TEXT`,
@@ -189,203 +186,256 @@ func validIssueStatus(v string) bool {
 	}
 }
 
-func (a *app) audits(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		rows, err := a.db.Query(selectAuditsQuery)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
+// ============================================================
+// AUDITS
+// ============================================================
 
-		result := []audit{}
-		for rows.Next() {
-			var x audit
-			if err := rows.Scan(&x.ID, &x.Restaurant, &x.Auditor, &x.Cleanliness, &x.SOP, &x.FoodQuality, &x.Score, &x.Notes, &x.CreatedAt); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			result = append(result, x)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, result)
+func (a *app) handleAudits(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		a.getAudits(w)
+		return
+	}
+	if r.Method == http.MethodPost {
+		a.createAudit(w, r)
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+}
 
-	case http.MethodPost:
+func (a *app) getAudits(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectAuditsQuery)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := []audit{}
+	for rows.Next() {
 		var x audit
-		if err := httpx.DecodeJSON(r, &x); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-		x.Restaurant = strings.TrimSpace(x.Restaurant)
-		x.Auditor = strings.TrimSpace(x.Auditor)
-		x.Notes = strings.TrimSpace(x.Notes)
-
-		if x.Restaurant == "" || x.Auditor == "" {
-			writeError(w, http.StatusBadRequest, errRestaurantAuditor)
-			return
-		}
-		if x.Cleanliness < 0 || x.Cleanliness > 100 || x.SOP < 0 || x.SOP > 100 || x.FoodQuality < 0 || x.FoodQuality > 100 {
-			writeError(w, http.StatusBadRequest, errScoreRange)
-			return
-		}
-
-		x.Score = float64(x.Cleanliness+x.SOP+x.FoodQuality) / 3
-		res, err := a.db.Exec(insertAuditQuery, x.Restaurant, x.Auditor, x.Cleanliness, x.SOP, x.FoodQuality, x.Score, x.Notes)
-		if err != nil {
+		if err := rows.Scan(&x.ID, &x.Restaurant, &x.Auditor, &x.Cleanliness, &x.SOP, &x.FoodQuality, &x.Score, &x.Notes, &x.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		x.ID, _ = res.LastInsertId()
-		x.CreatedAt = time.Now()
-		httpx.JSON(w, http.StatusCreated, x)
+		result = append(result, x)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, result)
+}
 
-	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+func (a *app) createAudit(w http.ResponseWriter, r *http.Request) {
+	var x audit
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	x.Restaurant = strings.TrimSpace(x.Restaurant)
+	x.Auditor = strings.TrimSpace(x.Auditor)
+	x.Notes = strings.TrimSpace(x.Notes)
+
+	if errMsg := validateAudit(x); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	x.Score = float64(x.Cleanliness+x.SOP+x.FoodQuality) / 3
+
+	res, err := a.db.Exec(insertAuditQuery, x.Restaurant, x.Auditor, x.Cleanliness, x.SOP, x.FoodQuality, x.Score, x.Notes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	x.ID, _ = res.LastInsertId()
+	x.CreatedAt = time.Now()
+	httpx.JSON(w, http.StatusCreated, x)
+}
+
+func validateAudit(x audit) string {
+	if x.Restaurant == "" || x.Auditor == "" {
+		return errRestaurantAuditor
+	}
+	if !isValidScore(x.Cleanliness) {
+		return errScoreRange
+	}
+	if !isValidScore(x.SOP) {
+		return errScoreRange
+	}
+	if !isValidScore(x.FoodQuality) {
+		return errScoreRange
+	}
+	return ""
+}
+
+func isValidScore(score int) bool {
+	if score < 0 {
+		return false
+	}
+	if score > 100 {
+		return false
+	}
+	return true
+}
+
+// ============================================================
+// ISSUES
+// ============================================================
+
+func (a *app) handleIssues(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		a.getIssues(w)
+		return
+	}
+	if r.Method == http.MethodPost {
+		a.createIssue(w, r)
+		return
+	}
+	if r.Method == http.MethodPatch {
+		a.updateIssue(w, r)
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+}
+
+func (a *app) getIssues(w http.ResponseWriter) {
+	rows, err := a.db.Query(selectIssuesQuery)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := []issue{}
+	for rows.Next() {
+		var x issue
+		if err := rows.Scan(&x.ID, &x.AuditID, &x.Title, &x.Severity, &x.Status, &x.AssignedTo, &x.DueDate, &x.CorrectiveAction, &x.CreatedAt, &x.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		result = append(result, x)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+func (a *app) createIssue(w http.ResponseWriter, r *http.Request) {
+	var x issue
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		return
+	}
+
+	x.Title = strings.TrimSpace(x.Title)
+	x.AssignedTo = strings.TrimSpace(x.AssignedTo)
+	x.CorrectiveAction = strings.TrimSpace(x.CorrectiveAction)
+
+	applyIssueDefaults(&x)
+
+	if errMsg := validateIssue(x); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	res, err := a.db.Exec(insertIssueQuery, x.AuditID, x.Title, x.Severity, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	x.ID, _ = res.LastInsertId()
+	x.CreatedAt = time.Now()
+	x.UpdatedAt = x.CreatedAt
+	httpx.JSON(w, http.StatusCreated, x)
+}
+
+func applyIssueDefaults(x *issue) {
+	if x.Severity == "" {
+		x.Severity = severityMedium
+	}
+	if x.Status == "" {
+		x.Status = statusOpen
 	}
 }
 
-func (a *app) issues(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		rows, err := a.db.Query(selectIssuesQuery)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		result := []issue{}
-		for rows.Next() {
-			var x issue
-			if err := rows.Scan(&x.ID, &x.AuditID, &x.Title, &x.Severity, &x.Status, &x.AssignedTo, &x.DueDate, &x.CorrectiveAction, &x.CreatedAt, &x.UpdatedAt); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			result = append(result, x)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, result)
-
-	case http.MethodPost:
-		var x issue
-		if err := httpx.DecodeJSON(r, &x); err != nil {
-			writeError(w, http.StatusBadRequest, errInvalidJSON)
-			return
-		}
-		x.Title = strings.TrimSpace(x.Title)
-		x.AssignedTo = strings.TrimSpace(x.AssignedTo)
-		x.CorrectiveAction = strings.TrimSpace(x.CorrectiveAction)
-
-		if x.Title == "" {
-			writeError(w, http.StatusBadRequest, errIssueTitleRequired)
-			return
-		}
-		if x.Severity == "" {
-			x.Severity = severityMedium
-		}
-		if x.Status == "" {
-			x.Status = statusOpen
-		}
-		if !validSeverity(x.Severity) || !validIssueStatus(x.Status) {
-			writeError(w, http.StatusBadRequest, errInvalidSeverityStatus)
-			return
-		}
-
-		res, err := a.db.Exec(insertIssueQuery, x.AuditID, x.Title, x.Severity, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		x.ID, _ = res.LastInsertId()
-		x.CreatedAt = time.Now()
-		x.UpdatedAt = x.CreatedAt
-		httpx.JSON(w, http.StatusCreated, x)
-
-	case http.MethodPatch:
-		var x issue
-		if err := httpx.DecodeJSON(r, &x); err != nil || x.ID == 0 {
-			writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
-			return
-		}
-		x.Status = strings.TrimSpace(x.Status)
-		x.AssignedTo = strings.TrimSpace(x.AssignedTo)
-		x.CorrectiveAction = strings.TrimSpace(x.CorrectiveAction)
-
-		if !validIssueStatus(x.Status) {
-			writeError(w, http.StatusBadRequest, errInvalidIssueStatus)
-			return
-		}
-
-		_, err := a.db.Exec(updateIssueQuery, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction, x.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"id":                x.ID,
-			"status":            x.Status,
-			"assigned_to":       x.AssignedTo,
-			"due_date":          x.DueDate,
-			"corrective_action": x.CorrectiveAction,
-		})
-
-	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+func validateIssue(x issue) string {
+	if x.Title == "" {
+		return errIssueTitleRequired
 	}
+	if !validSeverity(x.Severity) {
+		return errInvalidSeverityStatus
+	}
+	if !validIssueStatus(x.Status) {
+		return errInvalidSeverityStatus
+	}
+	return ""
 }
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
-	var score float64
-	var open, overdue, critical int
+func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
+	var x issue
+	if err := httpx.DecodeJSON(r, &x); err != nil {
+		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
+		return
+	}
+	if x.ID == 0 {
+		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
+		return
+	}
 
-	// Query 1: rata-rata skor 30 hari terakhir
-	err := a.db.QueryRow(`
-		SELECT COALESCE(AVG(score),0) 
-		FROM audits 
-		WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-	`).Scan(&score)
+	x.Status = strings.TrimSpace(x.Status)
+	x.AssignedTo = strings.TrimSpace(x.AssignedTo)
+	x.CorrectiveAction = strings.TrimSpace(x.CorrectiveAction)
+
+	if !validIssueStatus(x.Status) {
+		writeError(w, http.StatusBadRequest, errInvalidIssueStatus)
+		return
+	}
+
+	_, err := a.db.Exec(updateIssueQuery, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction, x.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Query 2: jumlah issue yang masih terbuka
-	err = a.db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM issues 
-		WHERE status <> 'closed'
-	`).Scan(&open)
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id":                x.ID,
+		"status":            x.Status,
+		"assigned_to":       x.AssignedTo,
+		"due_date":          x.DueDate,
+		"corrective_action": x.CorrectiveAction,
+	})
+}
+
+// ============================================================
+// SUMMARY
+// ============================================================
+
+func (a *app) handleSummary(w http.ResponseWriter, _ *http.Request) {
+	score, err := a.avgScore30Days()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Query 3: jumlah issue yang lewat jatuh tempo
-	err = a.db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM issues 
-		WHERE due_date < CURDATE() 
-		  AND status NOT IN ('closed','verified')
-	`).Scan(&overdue)
+	open, err := a.countOpenIssues()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Query 4: jumlah issue kritikal yang belum ditutup
-	err = a.db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM issues 
-		WHERE severity = 'critical' 
-		  AND status <> 'closed'
-	`).Scan(&critical)
+	overdue, err := a.countOverdueIssues()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	critical, err := a.countCriticalIssues()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -397,4 +447,38 @@ func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
 		"overdue_issues":  overdue,
 		"critical_issues": critical,
 	})
+}
+
+func (a *app) avgScore30Days() (float64, error) {
+	var score float64
+	err := a.db.QueryRow(`
+		SELECT COALESCE(AVG(score),0) 
+		FROM audits 
+		WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+	`).Scan(&score)
+	return score, err
+}
+
+func (a *app) countOpenIssues() (int, error) {
+	var count int
+	err := a.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE status <> 'closed'`).Scan(&count)
+	return count, err
+}
+
+func (a *app) countOverdueIssues() (int, error) {
+	var count int
+	err := a.db.QueryRow(`
+		SELECT COUNT(*) FROM issues 
+		WHERE due_date < CURDATE() AND status NOT IN ('closed','verified')
+	`).Scan(&count)
+	return count, err
+}
+
+func (a *app) countCriticalIssues() (int, error) {
+	var count int
+	err := a.db.QueryRow(`
+		SELECT COUNT(*) FROM issues 
+		WHERE severity = 'critical' AND status <> 'closed'
+	`).Scan(&count)
+	return count, err
 }

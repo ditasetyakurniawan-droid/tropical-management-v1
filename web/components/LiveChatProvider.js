@@ -6,26 +6,29 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { usePathname } from "next/navigation";
 import { api, API_URL, sessionUser, token } from "../lib/api";
 
-// Konstanta untuk nilai yang sering digunakan
 const MESSAGE_LIMIT_INITIAL = 100;
 const MESSAGE_LIMIT_MAX = 200;
 const RETRY_DELAY_MS = 1500;
-const STREAM_BUFFER_FLUSH_DELAY = 0; // Tidak digunakan, hanya dokumentasi
 const SSE_EVENT_PREFIX = "data:";
+const HISTORY_ENDPOINT = "/api/chat/messages";
+const STREAM_ENDPOINT = "/api/chat/stream";
 
-// Helper untuk membandingkan user ID
 export function isOwnChatMessage(message, currentUser) {
   const currentId = currentUser?.sub ?? currentUser?.id;
-  return currentId != null && String(message?.user_id) === String(currentId);
+
+  if (currentId == null) return false;
+  return String(message?.user_id) === String(currentId);
 }
 
-// Helper untuk parsing satu event SSE menjadi objek JSON
 function parseSSEEvent(eventText) {
+  if (!eventText) return null;
+
   const data = eventText
     .split("\n")
     .filter((line) => line.startsWith(SSE_EVENT_PREFIX))
@@ -37,7 +40,6 @@ function parseSSEEvent(eventText) {
   try {
     return JSON.parse(data);
   } catch {
-    // Abaikan event yang rusak, pertahankan koneksi
     return null;
   }
 }
@@ -47,84 +49,100 @@ const LiveChatContext = createContext(null);
 export default function LiveChatProvider({ children }) {
   const pathname = usePathname();
   const authenticated = pathname !== "/login" && Boolean(token());
+
   const [messages, setMessages] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
 
-  // Append message dengan deduplikasi dan batas maksimal riwayat
+  const sendingRef = useRef(false);
+
   const appendMessage = useCallback((message) => {
     setMessages((rows) => {
-      if (!message || rows.some((row) => row.id === message.id)) return rows;
+      if (!message?.id || rows.some((row) => row.id === message.id)) {
+        return rows;
+      }
+
       return [...rows, message].slice(-MESSAGE_LIMIT_MAX);
     });
   }, []);
 
-  // Kirim pesan baru
-  const sendMessage = useCallback(async (body) => {
-    const value = String(body || "").trim();
-    if (!value || sending) return null;
+  const sendMessage = useCallback(
+    async (body) => {
+      const value = String(body ?? "").trim();
 
-    setSending(true);
-    setError("");
+      if (!value || sendingRef.current) return null;
 
-    try {
-      const saved = await api("/api/chat/messages", {
-        method: "POST",
-        body: JSON.stringify({ body: value }),
-      });
-      appendMessage(saved);
-      return saved;
-    } catch (e) {
-      setError(e.message || "Gagal mengirim pesan");
-      throw e;
-    } finally {
-      setSending(false);
-    }
-  }, [sending, appendMessage]);
+      sendingRef.current = true;
+      setSending(true);
+      setError("");
+
+      try {
+        const saved = await api(HISTORY_ENDPOINT, {
+          method: "POST",
+          body: JSON.stringify({ body: value }),
+        });
+
+        appendMessage(saved);
+        return saved;
+      } catch (err) {
+        setError(err?.message || "Gagal mengirim pesan");
+        throw err;
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    },
+    [appendMessage]
+  );
 
   useEffect(() => {
     let active = true;
     let stopped = false;
     let retryTimer = null;
-    let controller = null;
+    let streamController = null;
 
-    // Set currentUser hanya jika authenticated
-    if (authenticated) {
-      const user = sessionUser();
-      setCurrentUser(user);
-    } else {
+    if (!authenticated) {
       setCurrentUser(null);
       setMessages([]);
       setConnected(false);
       setError("");
+
       return () => {
         active = false;
         stopped = true;
       };
     }
 
-    // Muat riwayat pesan
-    api(`/api/chat/messages?limit=${MESSAGE_LIMIT_INITIAL}`)
+    setCurrentUser(sessionUser());
+
+    api(`${HISTORY_ENDPOINT}?limit=${MESSAGE_LIMIT_INITIAL}`)
       .then((rows) => {
-        if (active) setMessages(Array.isArray(rows) ? rows : []);
+        if (!active) return;
+
+        const history = Array.isArray(rows) ? rows : [];
+        setMessages(history.slice(-MESSAGE_LIMIT_MAX));
       })
-      .catch((e) => {
-        if (active) setError(e.message || "Gagal memuat riwayat pesan");
+      .catch((err) => {
+        if (active) {
+          setError(err?.message || "Gagal memuat riwayat pesan");
+        }
       });
 
-    async function connect() {
+    async function connectToStream() {
       if (stopped) return;
 
-      controller = new AbortController();
+      streamController = new AbortController();
       const authToken = token();
 
       try {
-        const response = await fetch(`${API_URL}/api/chat/stream`, {
-          headers: { Authorization: `Bearer ${authToken}` },
+        const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
+          headers: authToken
+            ? { Authorization: `Bearer ${authToken}` }
+            : undefined,
           cache: "no-store",
-          signal: controller.signal,
+          signal: streamController.signal,
         });
 
         if (!response.ok || !response.body) {
@@ -140,10 +158,9 @@ export default function LiveChatProvider({ children }) {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        while (true) {
-          if (stopped) break;
-
+        while (!stopped && active) {
           const { done, value } = await reader.read();
+
           if (done || stopped) break;
 
           buffer += decoder.decode(value, { stream: true });
@@ -156,30 +173,30 @@ export default function LiveChatProvider({ children }) {
           }
         }
 
-        // Flush sisa buffer saat stream selesai
-        if (buffer) {
+        if (buffer && active && !stopped) {
           const parsed = parseSSEEvent(buffer);
           if (parsed) appendMessage(parsed);
         }
-      } catch (e) {
-        if (!stopped && active && e.name !== "AbortError") {
+      } catch (err) {
+        if (active && !stopped && err?.name !== "AbortError") {
           setError("Koneksi chat sedang disambungkan ulang...");
         }
       } finally {
-        if (!stopped && active) {
+        if (active && !stopped) {
           setConnected(false);
-          retryTimer = window.setTimeout(connect, RETRY_DELAY_MS);
+          retryTimer = window.setTimeout(connectToStream, RETRY_DELAY_MS);
         }
       }
     }
 
-    connect();
+    connectToStream();
 
     return () => {
       active = false;
       stopped = true;
+
       if (retryTimer) window.clearTimeout(retryTimer);
-      controller?.abort();
+      streamController?.abort();
     };
   }, [authenticated, appendMessage]);
 
@@ -204,8 +221,10 @@ export default function LiveChatProvider({ children }) {
 
 export function useLiveChat() {
   const context = useContext(LiveChatContext);
+
   if (!context) {
     throw new Error("useLiveChat harus digunakan di dalam LiveChatProvider");
   }
+
   return context;
 }
