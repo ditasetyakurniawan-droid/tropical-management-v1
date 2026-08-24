@@ -87,6 +87,7 @@ func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// writeError mengirimkan JSON error yang konsisten.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	httpx.JSON(w, status, map[string]string{"error": msg})
 }
