@@ -22,12 +22,36 @@ pipeline {
                 checkout scm
 
                 script {
-                    env.IMAGE_TAG = sh(
+                    env.GIT_SHORT_SHA = sh(
                         script: 'git rev-parse --short=12 HEAD',
                         returnStdout: true
                     ).trim()
 
-                    echo "IMAGE_TAG=${IMAGE_TAG}"
+                    echo "GIT_SHORT_SHA=${GIT_SHORT_SHA}"
+                }
+            }
+        }
+
+        stage('Resolve Version') {
+            steps {
+                script {
+                    if (!fileExists('VERSION')) {
+                        error "File VERSION tidak ditemukan di root repo. Buat file VERSION berisi versi semver, contoh: 1.0.0-beta1"
+                    }
+
+                    def rawVersion = readFile('VERSION').trim()
+
+                    // Validasi format semver: 1.0.0 / 1.0.0-beta1 / 1.0.0-rc1
+                    if (!(rawVersion ==~ /^\d+\.\d+\.\d+(-[a-zA-Z0-9]+)?$/)) {
+                        error "Format VERSION tidak valid: '${rawVersion}'. Contoh valid: 1.0.0 atau 1.0.0-beta1"
+                    }
+
+                    env.APP_VERSION = rawVersion
+                    // Tag immutable & traceable ke commit persis
+                    env.IMAGE_TAG   = "${rawVersion}-${env.GIT_SHORT_SHA}"
+
+                    echo "APP_VERSION=${env.APP_VERSION}"
+                    echo "IMAGE_TAG=${env.IMAGE_TAG}"
                 }
             }
         }
@@ -175,8 +199,17 @@ pipeline {
                           tropical-api-gateway \
                           tropical-web
                         do
+                            # Tag immutable (versi + sha) - source of truth utama, dipakai untuk traceability & rollback presisi
                             docker push \
                               "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG"
+
+                            # Tag pointer human-readable (versi saja) - dipakai untuk referensi di manifest/ArgoCD
+                            docker tag \
+                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG" \
+                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$APP_VERSION"
+
+                            docker push \
+                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$APP_VERSION"
                         done
 
                         docker logout "$HARBOR_REGISTRY" || true
@@ -189,7 +222,7 @@ pipeline {
 
     post {
         success {
-            echo "TROPICAL CI SUCCESS - IMAGE TAG: ${IMAGE_TAG}"
+            echo "TROPICAL CI SUCCESS - VERSION: ${APP_VERSION} | IMAGE TAG: ${IMAGE_TAG}"
         }
 
         failure {
