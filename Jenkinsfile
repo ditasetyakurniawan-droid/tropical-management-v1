@@ -2,11 +2,15 @@ pipeline {
     agent any
 
     environment {
-        HARBOR_REGISTRY = 'harbor-dt.co.id'
-        HARBOR_PROJECT  = 'devops-apps'
-        SONAR_HOST_URL  = 'http://sonar-dt:9000'
-        SONAR_PROJECT   = 'tropical-management-v1'
+        HARBOR_REGISTRY   = 'harbor-dt.co.id'
+        HARBOR_PROJECT    = 'devops-apps'
+        SONAR_HOST_URL    = 'http://sonar-dt:9000'
+        SONAR_PROJECT     = 'tropical-management-v1'
         JENKINS_CONTAINER = 'jenkins-server'
+
+        // GitOps
+        GITOPS_REPO       = 'github.com/ditasetyakurniawan-droid/tropical-management-gitops.git'
+        GITOPS_OVERLAY    = 'apps/tropical-management/overlays/test-app'
     }
 
     options {
@@ -41,13 +45,11 @@ pipeline {
 
                     def rawVersion = readFile('VERSION').trim()
 
-                    // Validasi format semver: 1.0.0 / 1.0.0-beta1 / 1.0.0-rc1
                     if (!(rawVersion ==~ /^\d+\.\d+\.\d+(-[a-zA-Z0-9]+)?$/)) {
                         error "Format VERSION tidak valid: '${rawVersion}'. Contoh valid: 1.0.0 atau 1.0.0-beta1"
                     }
 
                     env.APP_VERSION = rawVersion
-                    // Tag immutable & traceable ke commit persis
                     env.IMAGE_TAG   = "${rawVersion}-${env.GIT_SHORT_SHA}"
 
                     echo "APP_VERSION=${env.APP_VERSION}"
@@ -164,6 +166,11 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // CHANGED: Hapus push floating tag $APP_VERSION
+        // Hanya push tag unik $IMAGE_TAG (versi+sha)
+        // Aman dengan Harbor immutability ON
+        // ============================================================
         stage('Push Harbor') {
             when {
                 branch 'main'
@@ -199,21 +206,63 @@ pipeline {
                           tropical-api-gateway \
                           tropical-web
                         do
-                            # Tag immutable (versi + sha) - source of truth utama, dipakai untuk traceability & rollback presisi
-                            docker push \
-                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG"
-
-                            # Tag pointer human-readable (versi saja) - dipakai untuk referensi di manifest/ArgoCD
-                            docker tag \
-                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG" \
-                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$APP_VERSION"
-
-                            docker push \
-                              "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$APP_VERSION"
+                            docker push "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG"
                         done
 
                         docker logout "$HARBOR_REGISTRY" || true
                         rm -rf "$DOCKER_CONFIG"
+                    '''
+                }
+            }
+        }
+
+        // ============================================================
+        // NEW: Auto-update image tag di repo GitOps
+        // Jenkins clone -> sed update newTag -> commit -> push
+        // ArgoCD/Flux akan auto-sync setelah detect perubahan
+        // ============================================================
+        stage('Update GitOps') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'tropical-jenkins-gitops',
+                        usernameVariable: 'GITHUB_USER',
+                        passwordVariable: 'GITHUB_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+
+                        rm -rf gitops-repo
+
+                        git clone https://${GITHUB_USER}:${GITHUB_TOKEN}@${GITOPS_REPO} gitops-repo
+
+                        cd gitops-repo/${GITOPS_OVERLAY}
+
+                        # Update semua newTag sekaligus
+                        sed -i "s|newTag: .*|newTag: ${IMAGE_TAG}|g" kustomization.yaml
+
+                        echo "=== Updated kustomization.yaml ==="
+                        cat kustomization.yaml
+                        echo "==================================="
+
+                        git config user.email "jenkins@dt.co.id"
+                        git config user.name "Jenkins CI"
+
+                        git add kustomization.yaml
+
+                        # Commit hanya jika ada perubahan
+                        if git diff --cached --quiet; then
+                            echo "Tidak ada perubahan tag, skip commit."
+                        else
+                            git commit -m "chore(test-app): bump images to ${IMAGE_TAG}"
+                            git push origin main
+                            echo "GitOps repo updated -> ${IMAGE_TAG}"
+                        fi
                     '''
                 }
             }
@@ -232,6 +281,7 @@ pipeline {
         always {
             sh '''
                 rm -rf "$WORKSPACE/.docker-ci" || true
+                rm -rf "$WORKSPACE/gitops-repo" || true
                 docker image prune -f || true
             '''
         }
