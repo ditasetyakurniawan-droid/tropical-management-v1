@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { API_URL, clearSession, setSession } from "../../lib/api";
+import { redirectTo } from "../../lib/navigation";
 
 const LOGIN_TIMEOUT_MS = 15_000;
 
@@ -37,7 +38,7 @@ export default function Login() {
         return;
       }
       setSession(data.token, data.user);
-      window.location.replace("/");
+      redirectTo("/");
     } catch (err) {
       setError(err?.name === "AbortError"
         ? "Login melewati batas waktu. Silakan coba lagi."

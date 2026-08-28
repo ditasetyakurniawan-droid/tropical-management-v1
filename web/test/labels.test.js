@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, expect, it } from "vitest";
 
 import {
   channelLabel,
@@ -8,20 +7,22 @@ import {
   statusLabel,
 } from "../lib/labels.js";
 
-test("label helpers translate known values", () => {
-  assert.equal(roleLabel("admin"), "Admin");
-  assert.equal(statusLabel("in_progress"), "Diproses");
-  assert.equal(severityLabel("critical"), "Kritis");
-  assert.equal(channelLabel("dine-in"), "Makan di Tempat");
-});
+describe("label helpers", () => {
+  it("translate known values", () => {
+    expect(roleLabel("admin")).toBe("Admin");
+    expect(statusLabel("in_progress")).toBe("Diproses");
+    expect(severityLabel("critical")).toBe("Kritis");
+    expect(channelLabel("dine-in")).toBe("Makan di Tempat");
+  });
 
-test("label helpers preserve unknown values and provide fallbacks", () => {
-  assert.equal(roleLabel("owner"), "owner");
-  assert.equal(statusLabel("waiting_review"), "waiting review");
-  assert.equal(severityLabel("urgent"), "urgent");
-  assert.equal(channelLabel("kiosk"), "kiosk");
-  assert.equal(roleLabel(""), "-");
-  assert.equal(statusLabel(null), "-");
-  assert.equal(severityLabel(undefined), "-");
-  assert.equal(channelLabel(null), "-");
+  it("preserve unknown values and provide fallbacks", () => {
+    expect(roleLabel("owner")).toBe("owner");
+    expect(statusLabel("waiting_review")).toBe("waiting review");
+    expect(severityLabel("urgent")).toBe("urgent");
+    expect(channelLabel("kiosk")).toBe("kiosk");
+    expect(roleLabel("")).toBe("-");
+    expect(statusLabel(null)).toBe("-");
+    expect(severityLabel(undefined)).toBe("-");
+    expect(channelLabel(null)).toBe("-");
+  });
 });

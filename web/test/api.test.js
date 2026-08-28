@@ -1,5 +1,10 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const navigation = vi.hoisted(() => ({
+  redirectTo: vi.fn(),
+}));
+
+vi.mock("../lib/navigation", () => navigation);
 
 import {
   api,
@@ -9,159 +14,116 @@ import {
   token,
 } from "../lib/api.js";
 
-class MemoryStorage {
-  constructor() {
-    this.values = new Map();
-  }
-  getItem(key) {
-    return this.values.has(key) ? this.values.get(key) : null;
-  }
-  setItem(key, value) {
-    this.values.set(key, String(value));
-  }
-  removeItem(key) {
-    this.values.delete(key);
-  }
-}
-
-function installBrowser() {
-  const redirects = [];
-  globalThis.localStorage = new MemoryStorage();
-  globalThis.sessionStorage = new MemoryStorage();
-  globalThis.window = {
-    location: {
-      replace(path) {
-        redirects.push(path);
-      },
-    },
-  };
-  return redirects;
-}
-
-function uninstallBrowser() {
-  delete globalThis.window;
-  delete globalThis.localStorage;
-  delete globalThis.sessionStorage;
+afterEach(() => {
+  vi.restoreAllMocks();
+  navigation.redirectTo.mockReset();
+  sessionStorage.clear();
+  localStorage.clear();
   delete globalThis.fetch;
-}
-
-test.afterEach(() => {
-  uninstallBrowser();
 });
 
-test("session helpers are safe during server rendering", () => {
-  assert.equal(token(), "");
-  assert.equal(sessionUser(), null);
-  assert.doesNotThrow(() => setSession("jwt", { id: 1 }));
-  assert.doesNotThrow(() => clearSession());
-});
-
-test("session helpers use sessionStorage and remove legacy localStorage", () => {
-  installBrowser();
-  localStorage.setItem("tropical_token", "legacy");
-  localStorage.setItem("tropical_user", "legacy");
-
-  setSession("jwt-123", { id: 7, role: "admin" });
-  assert.equal(token(), "jwt-123");
-  assert.deepEqual(sessionUser(), { id: 7, role: "admin" });
-  assert.equal(localStorage.getItem("tropical_token"), null);
-  assert.equal(localStorage.getItem("tropical_user"), null);
-
-  clearSession();
-  assert.equal(token(), "");
-  assert.equal(sessionUser(), null);
-});
-
-test("sessionUser tolerates malformed browser storage", () => {
-  installBrowser();
-  sessionStorage.setItem("tropical_user", "not-json");
-  assert.equal(sessionUser(), null);
-});
-
-test("api attaches JWT and merges request headers", async () => {
-  installBrowser();
-  setSession("jwt-abc", { id: 1 });
-
-  let request;
-  globalThis.fetch = async (url, options) => {
-    request = { url, options };
-    return {
-      ok: true,
-      status: 200,
-      async json() {
-        return { status: "ok" };
-      },
-    };
-  };
-
-  const result = await api("/api/dashboard", {
-    method: "GET",
-    headers: { "X-Test": "1" },
+describe("session helpers", () => {
+  it("are safe during server rendering", () => {
+    const browserWindow = globalThis.window;
+    vi.stubGlobal("window", undefined);
+    expect(token()).toBe("");
+    expect(sessionUser()).toBeNull();
+    expect(() => setSession("jwt", { id: 1 })).not.toThrow();
+    expect(() => clearSession()).not.toThrow();
+    vi.stubGlobal("window", browserWindow);
+    vi.unstubAllGlobals();
   });
 
-  assert.deepEqual(result, { status: "ok" });
-  assert.equal(request.url, "/api/dashboard");
-  assert.equal(request.options.headers.Authorization, "Bearer jwt-abc");
-  assert.equal(request.options.headers["X-Test"], "1");
-  assert.equal(request.options.cache, "no-store");
-});
+  it("use sessionStorage and remove legacy localStorage", () => {
+    localStorage.setItem("tropical_token", "legacy");
+    localStorage.setItem("tropical_user", "legacy");
 
-test("api clears the session and redirects on 401", async () => {
-  const redirects = installBrowser();
-  setSession("jwt-expired", { id: 1 });
-  globalThis.fetch = async () => ({
-    ok: false,
-    status: 401,
-    async json() {
-      return { error: "unauthorized" };
-    },
+    setSession("jwt-123", { id: 7, role: "admin" });
+    expect(token()).toBe("jwt-123");
+    expect(sessionUser()).toEqual({ id: 7, role: "admin" });
+    expect(localStorage.getItem("tropical_token")).toBeNull();
+    expect(localStorage.getItem("tropical_user")).toBeNull();
+
+    clearSession();
+    expect(token()).toBe("");
+    expect(sessionUser()).toBeNull();
   });
 
-  await assert.rejects(() => api("/api/dashboard"), /unauthorized/);
-  assert.equal(token(), "");
-  assert.deepEqual(redirects, ["/login"]);
+  it("tolerates malformed browser storage", () => {
+    sessionStorage.setItem("tropical_user", "not-json");
+    expect(sessionUser()).toBeNull();
+  });
 });
 
-test("api falls back to HTTP status when the response body is not JSON", async () => {
-  installBrowser();
-  globalThis.fetch = async () => ({
-    ok: false,
-    status: 503,
-    async json() {
-      throw new Error("invalid JSON");
-    },
+describe("api", () => {
+  it("attaches JWT and merges request headers", async () => {
+    setSession("jwt-abc", { id: 1 });
+    let request;
+    globalThis.fetch = vi.fn(async (url, options) => {
+      request = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "ok" }),
+      };
+    });
+
+    await expect(api("/api/dashboard", {
+      method: "GET",
+      headers: { "X-Test": "1" },
+    })).resolves.toEqual({ status: "ok" });
+
+    expect(request.url).toBe("/api/dashboard");
+    expect(request.options.headers.Authorization).toBe("Bearer jwt-abc");
+    expect(request.options.headers["X-Test"]).toBe("1");
+    expect(request.options.cache).toBe("no-store");
   });
 
-  await assert.rejects(() => api("/api/dashboard"), /HTTP 503/);
-});
+  it("clears the session and redirects on 401", async () => {
+    setSession("jwt-expired", { id: 1 });
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: "unauthorized" }),
+    }));
 
-test("api converts AbortError into a stable timeout message", async () => {
-  installBrowser();
-  globalThis.fetch = async () => {
-    const error = new Error("aborted");
-    error.name = "AbortError";
-    throw error;
-  };
+    await expect(api("/api/dashboard")).rejects.toThrow("unauthorized");
+    expect(token()).toBe("");
+    expect(navigation.redirectTo).toHaveBeenCalledWith("/login");
+  });
 
-  await assert.rejects(
-    () => api("/api/dashboard"),
-    /Permintaan ke server melewati batas waktu/,
-  );
-});
+  it("falls back to HTTP status when the response body is not JSON", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => { throw new Error("invalid JSON"); },
+    }));
 
-test("api preserves non-timeout network errors and respects external signals", async () => {
-  installBrowser();
-  const controller = new AbortController();
-  const expected = new Error("network down");
-  let seenSignal;
-  globalThis.fetch = async (_url, options) => {
-    seenSignal = options.signal;
-    throw expected;
-  };
+    await expect(api("/api/dashboard")).rejects.toThrow("HTTP 503");
+  });
 
-  await assert.rejects(
-    () => api("/api/dashboard", { signal: controller.signal }),
-    (error) => error === expected,
-  );
-  assert.equal(seenSignal, controller.signal);
+  it("converts AbortError into a stable timeout message", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    });
+
+    await expect(api("/api/dashboard")).rejects.toThrow(
+      "Permintaan ke server melewati batas waktu",
+    );
+  });
+
+  it("preserves network errors and respects external signals", async () => {
+    const controller = new AbortController();
+    const expected = new Error("network down");
+    let seenSignal;
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      seenSignal = options.signal;
+      throw expected;
+    });
+
+    await expect(api("/api/dashboard", { signal: controller.signal })).rejects.toBe(expected);
+    expect(seenSignal).toBe(controller.signal);
+  });
 });

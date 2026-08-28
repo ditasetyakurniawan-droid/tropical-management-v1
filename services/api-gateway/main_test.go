@@ -173,3 +173,81 @@ func TestGatewayReturns404ForPrefixLookalike(t *testing.T) {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}
 }
+
+func TestGatewayRejectsForbiddenMutation(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	g := &gateway{secret: secret}
+	req := httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("auditor")))
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestGatewayUsesEmailWhenNameIsBlank(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"name": r.Header.Get("X-User-Name")})
+	}))
+	defer upstream.Close()
+
+	secret := []byte("01234567890123456789012345678901")
+	claims := validClaims("admin")
+	claims["name"] = "   "
+	claims["email"] = "fallback@example.com"
+	g := &gateway{secret: secret, routes: []route{{prefix: "/api/sales", proxy: proxy(upstream.URL)}}}
+	req := httptest.NewRequest(http.MethodGet, "/api/sales", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, claims))
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"fallback@example.com"`) {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestGatewayAuthorizedUnknownRouteReturns404(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	g := &gateway{secret: secret}
+	req := httptest.NewRequest(http.MethodGet, "/api/not-configured", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("admin")))
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestGatewayRejectsNonHS256Token(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS384, validClaims("admin"))
+	signed, err := tok.SignedString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sales", nil)
+	req.Header.Set("Authorization", "Bearer "+signed)
+	g := &gateway{secret: secret}
+	if _, err := g.claims(req); err == nil {
+		t.Fatal("non-HS256 token should be rejected")
+	}
+}
+
+func TestProxyErrorHandlerMasksUpstreamFailure(t *testing.T) {
+	p := proxy("http://127.0.0.1:1")
+	req := httptest.NewRequest(http.MethodGet, "/api/sales", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "upstream service unavailable") {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyPanicsForInvalidURL(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("proxy should panic for an invalid URL")
+		}
+	}()
+	_ = proxy("http://[::1")
+}

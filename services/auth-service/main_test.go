@@ -290,3 +290,78 @@ func TestAuthDatabaseErrorsAndCredentialFailures(t *testing.T) {
 	}
 	script.assertDone(t)
 }
+
+func TestAuthAdditionalValidationBranches(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	a := &app{secret: secret}
+
+	t.Run("me rejects missing token", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.me(w, httptest.NewRequest(http.MethodGet, "/api/auth/me", nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("change password rejects invalid session email", func(t *testing.T) {
+		claims := authClaims(roleAdmin)
+		delete(claims, "email")
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentPass123!","new_password":"DifferentPass123!"}`))
+		req.Header.Set("Authorization", "Bearer "+authToken(t, secret, claims))
+		w := httptest.NewRecorder()
+		a.changePassword(w, req)
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "invalid session") {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("change password rejects malformed payload", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"x","unknown":true}`))
+		req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAdmin)))
+		w := httptest.NewRecorder()
+		a.changePassword(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("change password rejects same password", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"SamePassword12!","new_password":"SamePassword12!"}`))
+		req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAdmin)))
+		w := httptest.NewRecorder()
+		a.changePassword(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "different") {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("users create rejects malformed payload", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.usersCreate(w, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"name":"A","unknown":true}`)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("users update rejects missing id and invalid role", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.usersUpdate(w, httptest.NewRequest(http.MethodPatch, "/api/users", strings.NewReader(`{"name":"A","role":"admin"}`)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("missing id status=%d body=%q", w.Code, w.Body.String())
+		}
+
+		w = httptest.NewRecorder()
+		a.usersUpdate(w, httptest.NewRequest(http.MethodPatch, "/api/users", strings.NewReader(`{"id":1,"name":" ","role":"owner"}`)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid role status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestBootstrapAdminRejectsWeakConfiguredPassword(t *testing.T) {
+	t.Setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "short")
+	if err := (&app{}).bootstrapAdmin(); err == nil || !strings.Contains(err.Error(), "at least 12") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

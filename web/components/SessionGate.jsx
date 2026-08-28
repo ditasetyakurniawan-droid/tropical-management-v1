@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { api, clearSession, setSession, token } from "../lib/api";
+import { redirectTo } from "../lib/navigation";
 import EnterpriseLoader from "./EnterpriseLoader";
 
 // Constants
@@ -58,7 +59,7 @@ export default function SessionGate({ children }) {
     clearTimers();
     removeActivityListeners();
     clearSession();
-    window.location.replace(`/login?reason=${reason}`);
+    redirectTo(`/login?reason=${reason}`);
   };
 
   useEffect(() => {
