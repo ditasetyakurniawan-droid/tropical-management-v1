@@ -1,3 +1,5 @@
+import { redirectTo } from "./navigation";
+
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 const TOKEN_KEY = "tropical_token";
@@ -95,7 +97,7 @@ export async function api(path, options = {}) {
 
   if (response.status === 401 && typeof window !== "undefined") {
     clearSession();
-    window.location.replace("/login");
+    redirectTo("/login");
   }
 
   if (!response.ok) {

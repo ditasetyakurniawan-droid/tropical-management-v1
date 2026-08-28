@@ -25,7 +25,7 @@ export function isOwnChatMessage(message, currentUser) {
   return String(message?.user_id) === String(currentId);
 }
 
-function parseSSEEvent(eventText) {
+export function parseSSEEvent(eventText) {
   if (!eventText) return null;
   const data = eventText
     .split("\n")
@@ -42,7 +42,7 @@ function parseSSEEvent(eventText) {
 
 // ===== Helper di luar komponen =====
 
-async function loadHistory({ appendMessage, onError, isActive }) {
+export async function loadHistory({ appendMessage, onError, isActive }) {
   try {
     const rows = await api(`${HISTORY_ENDPOINT}?limit=${MESSAGE_LIMIT_INITIAL}`);
     if (!isActive()) return;
@@ -53,7 +53,7 @@ async function loadHistory({ appendMessage, onError, isActive }) {
   }
 }
 
-async function openStream() {
+export async function openStream() {
   const authToken = token();
   const response = await fetch(`${API_URL}${STREAM_ENDPOINT}`, {
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
@@ -65,7 +65,7 @@ async function openStream() {
   return response.body.getReader();
 }
 
-async function consumeStream({ reader, appendMessage, isActive, isStopped }) {
+export async function consumeStream({ reader, appendMessage, isActive, isStopped }) {
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -94,7 +94,7 @@ async function consumeStream({ reader, appendMessage, isActive, isStopped }) {
   }
 }
 
-async function connectChatStream({
+export async function connectChatStream({
   appendMessage,
   onConnected,
   onDisconnected,

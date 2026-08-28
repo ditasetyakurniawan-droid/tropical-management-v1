@@ -257,3 +257,75 @@ func TestNewServerDefaults(t *testing.T) {
 		t.Fatalf("unexpected server defaults: %+v", s)
 	}
 }
+
+func TestRequestIDNilContextAndNilHandler(t *testing.T) {
+	if got := RequestID(nil); got != "" {
+		t.Fatalf("RequestID(nil)=%q", got)
+	}
+
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	h := RequestLogger("test", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	if w.Code != http.StatusNotFound || w.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("status=%d request-id=%q", w.Code, w.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestStatusWriterOptionalInterfacesAndAccounting(t *testing.T) {
+	t.Run("flush and unwrap", func(t *testing.T) {
+		base := httptest.NewRecorder()
+		w := &statusWriter{ResponseWriter: base}
+		w.Flush()
+		if !w.wroteHeader || w.status != http.StatusOK || !base.Flushed {
+			t.Fatalf("wroteHeader=%v status=%d flushed=%v", w.wroteHeader, w.status, base.Flushed)
+		}
+		if w.Unwrap() != base {
+			t.Fatal("Unwrap did not return the underlying writer")
+		}
+	})
+
+	t.Run("unsupported hijack and push", func(t *testing.T) {
+		w := &statusWriter{ResponseWriter: httptest.NewRecorder()}
+		if _, _, err := w.Hijack(); err == nil {
+			t.Fatal("Hijack should fail for a writer without http.Hijacker")
+		}
+		if err := w.Push("/asset.js", nil); !errors.Is(err, http.ErrNotSupported) {
+			t.Fatalf("Push error=%v", err)
+		}
+	})
+
+	t.Run("read from fallback counts bytes", func(t *testing.T) {
+		base := httptest.NewRecorder()
+		w := &statusWriter{ResponseWriter: base}
+		n, err := w.ReadFrom(strings.NewReader("hello"))
+		if err != nil || n != 5 || w.bytes != 5 || w.status != http.StatusOK {
+			t.Fatalf("n=%d err=%v bytes=%d status=%d", n, err, w.bytes, w.status)
+		}
+		if base.Body.String() != "hello" {
+			t.Fatalf("body=%q", base.Body.String())
+		}
+	})
+
+	t.Run("duplicate write header is ignored", func(t *testing.T) {
+		base := httptest.NewRecorder()
+		w := &statusWriter{ResponseWriter: base}
+		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusTeapot)
+		if w.status != http.StatusCreated || base.Code != http.StatusCreated {
+			t.Fatalf("status=%d base=%d", w.status, base.Code)
+		}
+	})
+}
+
+func TestDecodeJSONRejectsOversizedBody(t *testing.T) {
+	var body map[string]any
+	payload := `{"value":"` + strings.Repeat("x", maxJSONBodyBytes) + `"}`
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+	if err := DecodeJSON(r, &body); err == nil {
+		t.Fatal("expected oversized JSON body to fail")
+	}
+}
