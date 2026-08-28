@@ -215,3 +215,90 @@ func TestAuditDatabaseErrorsAreHandled(t *testing.T) {
 	}
 	script.assertDone(t)
 }
+
+func TestAuditSummaryRemainingBranches(t *testing.T) {
+	t.Run("rejects unsupported method", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{}).summary(w, httptest.NewRequest(http.MethodPost, "/internal/summary", nil))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("open issues error", func(t *testing.T) {
+		boom := errors.New("open issues failed")
+		db, script := openTestDB(t,
+			queryStep("AVG(score)", []string{"score"}, row(float64(90))),
+			queryErrorStep("status <> 'closed'", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("overdue issues error", func(t *testing.T) {
+		boom := errors.New("overdue issues failed")
+		db, script := openTestDB(t,
+			queryStep("AVG(score)", []string{"score"}, row(float64(90))),
+			queryStep("status <> 'closed'", []string{"count"}, row(int64(3))),
+			queryErrorStep("due_date < CURDATE()", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("critical issues error", func(t *testing.T) {
+		boom := errors.New("critical issues failed")
+		db, script := openTestDB(t,
+			queryStep("AVG(score)", []string{"score"}, row(float64(90))),
+			queryStep("status <> 'closed'", []string{"count"}, row(int64(3))),
+			queryStep("due_date < CURDATE()", []string{"count"}, row(int64(1))),
+			queryErrorStep("severity = 'critical'", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestAuditIssueDatabaseErrorsAreHandled(t *testing.T) {
+	boom := errors.New("issue database failure")
+	db, script := openTestDB(t,
+		queryErrorStep("FROM issues ORDER BY id DESC", boom),
+		execErrorStep("INSERT INTO issues", boom),
+		execErrorStep("UPDATE issues SET", boom),
+	)
+	a := &app{db: db}
+
+	w := httptest.NewRecorder()
+	a.getIssues(w)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("get issues status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createIssue(w, httptest.NewRequest(http.MethodPost, "/api/issues", strings.NewReader(`{"audit_id":1,"title":"Fix sink","severity":"high","assigned_to":"Ops","due_date":"2026-09-02","corrective_action":"Repair"}`)))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("create issue status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.updateIssue(w, httptest.NewRequest(http.MethodPatch, "/api/issues", strings.NewReader(`{"id":6,"status":"resolved","assigned_to":"QA","due_date":"2026-09-03","corrective_action":"Done"}`)))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("update issue status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
+}

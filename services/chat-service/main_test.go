@@ -235,3 +235,88 @@ func TestHandleStreamConnectsAndStopsOnCanceledContext(t *testing.T) {
 		t.Fatalf("stream client leak: %d", len(a.broker.clients))
 	}
 }
+
+type signalingStreamRecorder struct {
+	*httptest.ResponseRecorder
+	flushed chan struct{}
+}
+
+func newSignalingStreamRecorder() *signalingStreamRecorder {
+	return &signalingStreamRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		flushed:          make(chan struct{}, 1),
+	}
+}
+
+func (w *signalingStreamRecorder) Flush() {
+	w.ResponseRecorder.Flush()
+	select {
+	case w.flushed <- struct{}{}:
+	default:
+	}
+}
+
+func TestRunStreamLoopMessageAndHeartbeat(t *testing.T) {
+	t.Run("writes broker message", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil).WithContext(ctx)
+		client := make(chan chatMessage, 1)
+		client <- chatMessage{ID: 11, UserID: "7", UserName: "Alice", Role: roleStaff, Body: "hello"}
+		heartbeat := time.NewTicker(time.Hour)
+		defer heartbeat.Stop()
+		w := newSignalingStreamRecorder()
+		done := make(chan struct{})
+
+		go func() {
+			(&app{}).runStreamLoop(w, req, w, client, heartbeat)
+			close(done)
+		}()
+
+		select {
+		case <-w.flushed:
+			cancel()
+		case <-time.After(time.Second):
+			t.Fatal("stream did not flush broker message")
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("stream did not stop after cancellation")
+		}
+		if body := w.Body.String(); !strings.Contains(body, "event: message") || !strings.Contains(body, `"body":"hello"`) {
+			t.Fatalf("unexpected stream body %q", body)
+		}
+	})
+
+	t.Run("writes heartbeat", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil).WithContext(ctx)
+		client := make(chan chatMessage)
+		heartbeat := time.NewTicker(time.Millisecond)
+		defer heartbeat.Stop()
+		w := newSignalingStreamRecorder()
+		done := make(chan struct{})
+
+		go func() {
+			(&app{}).runStreamLoop(w, req, w, client, heartbeat)
+			close(done)
+		}()
+
+		select {
+		case <-w.flushed:
+			cancel()
+		case <-time.After(time.Second):
+			t.Fatal("stream did not flush heartbeat")
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("stream did not stop after cancellation")
+		}
+		if body := w.Body.String(); !strings.Contains(body, ": heartbeat") {
+			t.Fatalf("unexpected heartbeat body %q", body)
+		}
+	})
+}

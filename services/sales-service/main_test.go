@@ -136,3 +136,38 @@ func TestSalesDatabaseErrorsAreHandled(t *testing.T) {
 	}
 	script.assertDone(t)
 }
+
+func TestSalesRemainingCoverageBranches(t *testing.T) {
+	t.Run("summary rejects unsupported method", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{}).summary(w, httptest.NewRequest(http.MethodPost, "/internal/summary", nil))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("migration returns database error", func(t *testing.T) {
+		boom := errors.New("migration failed")
+		db, script := openTestDB(t, execErrorStep("CREATE TABLE IF NOT EXISTS sales_entries", boom))
+		if err := (&app{db: db}).migrate(); !errors.Is(err, boom) {
+			t.Fatalf("expected migration error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("scan sales returns row scan error", func(t *testing.T) {
+		db, script := openTestDB(t,
+			queryStep("FROM sales_entries ORDER BY", []string{"id", "business_date", "orders", "revenue", "channel", "created_at"},
+				row("not-an-id", "2026-08-29", int64(1), float64(10), "dine-in", time.Now())),
+		)
+		rows, err := db.Query(selectSalesQuery, defaultSalesListLimit)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		if _, err := scanSales(rows); err == nil {
+			t.Fatal("expected scan error")
+		}
+		script.assertDone(t)
+	})
+}

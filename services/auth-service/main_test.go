@@ -365,3 +365,193 @@ func TestBootstrapAdminRejectsWeakConfiguredPassword(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestApplyUserUpdatePasswordAndDatabaseErrors(t *testing.T) {
+	t.Run("updates password hash when supplied", func(t *testing.T) {
+		db, script := openTestDB(t, execStep("password_hash", 0, 1))
+		a := &app{db: db}
+		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleStaff, Active: true, Password: "LongPassword12!"}
+		if err := a.applyUserUpdate(input); err != nil {
+			t.Fatalf("apply update with password: %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("returns database error without password", func(t *testing.T) {
+		boom := errors.New("update failed")
+		db, script := openTestDB(t, execErrorStep("active=? WHERE id=?", boom))
+		a := &app{db: db}
+		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleStaff, Active: true}
+		if err := a.applyUserUpdate(input); !errors.Is(err, boom) {
+			t.Fatalf("expected database error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("returns database error with password", func(t *testing.T) {
+		boom := errors.New("update failed")
+		db, script := openTestDB(t, execErrorStep("password_hash", boom))
+		a := &app{db: db}
+		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleAuditor, Active: true, Password: "LongPassword12!"}
+		if err := a.applyUserUpdate(input); !errors.Is(err, boom) {
+			t.Fatalf("expected database error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestBootstrapAdminAndMigrationBranches(t *testing.T) {
+	t.Setenv("BOOTSTRAP_ADMIN_EMAIL_FILE", "")
+	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD_FILE", "")
+
+	t.Run("rejects short bootstrap password before database access", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_ADMIN_EMAIL", "ADMIN@EXAMPLE.COM")
+		t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "short")
+		if err := (&app{}).bootstrapAdmin(); err == nil || !strings.Contains(err.Error(), "at least 12") {
+			t.Fatalf("expected short-password error, got %v", err)
+		}
+	})
+
+	t.Run("creates admin when account is missing", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_ADMIN_EMAIL", " ADMIN@EXAMPLE.COM ")
+		t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "LongPassword12!")
+		db, script := openTestDB(t,
+			queryStep("SELECT COUNT(*) FROM users WHERE email", []string{"count"}, row(int64(0))),
+			execStep("INSERT INTO users", 1, 1),
+		)
+		a := &app{db: db}
+		if err := a.bootstrapAdmin(); err != nil {
+			t.Fatalf("bootstrap admin: %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("returns count query error", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+		t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "LongPassword12!")
+		boom := errors.New("count failed")
+		db, script := openTestDB(t, queryErrorStep("SELECT COUNT(*) FROM users WHERE email", boom))
+		if err := (&app{db: db}).bootstrapAdmin(); !errors.Is(err, boom) {
+			t.Fatalf("expected count error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("returns insert error", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+		t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "LongPassword12!")
+		boom := errors.New("insert failed")
+		db, script := openTestDB(t,
+			queryStep("SELECT COUNT(*) FROM users WHERE email", []string{"count"}, row(int64(0))),
+			execErrorStep("INSERT INTO users", boom),
+		)
+		if err := (&app{db: db}).bootstrapAdmin(); !errors.Is(err, boom) {
+			t.Fatalf("expected insert error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("migration returns create-table error", func(t *testing.T) {
+		boom := errors.New("create failed")
+		db, script := openTestDB(t, execErrorStep("CREATE TABLE IF NOT EXISTS users", boom))
+		if err := (&app{db: db}).migrate(); !errors.Is(err, boom) {
+			t.Fatalf("expected migration error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("migration tolerates alter error", func(t *testing.T) {
+		boom := errors.New("duplicate column")
+		db, script := openTestDB(t,
+			execStep("CREATE TABLE IF NOT EXISTS users", 0, 0),
+			execErrorStep("ALTER TABLE users ADD COLUMN active", boom),
+		)
+		if err := (&app{db: db}).migrate(); err != nil {
+			t.Fatalf("alter error should be restart-safe, got %v", err)
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestChangePasswordCredentialAndDatabaseBranches(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	oldPassword := "CurrentPass123!"
+	hash, err := bcrypt.GenerateFromPassword([]byte(oldPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newRequest := func(current, next string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"`+current+`","new_password":"`+next+`"}`))
+		req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAdmin)))
+		return req
+	}
+
+	t.Run("rejects same current and new password", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{secret: secret}).changePassword(w, newRequest(oldPassword, oldPassword))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rejects inactive account", func(t *testing.T) {
+		db, script := openTestDB(t, queryStep("SELECT password_hash,active FROM users", []string{"password_hash", "active"}, row(string(hash), false)))
+		w := httptest.NewRecorder()
+		(&app{db: db, secret: secret}).changePassword(w, newRequest(oldPassword, "DifferentPass123!"))
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), errAccountUnavailable) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("rejects incorrect current password", func(t *testing.T) {
+		db, script := openTestDB(t, queryStep("SELECT password_hash,active FROM users", []string{"password_hash", "active"}, row(string(hash), true)))
+		w := httptest.NewRecorder()
+		(&app{db: db, secret: secret}).changePassword(w, newRequest("WrongPassword12!", "DifferentPass123!"))
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), errCurrentPasswordIncorrect) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("masks update database failure", func(t *testing.T) {
+		boom := errors.New("update failed")
+		db, script := openTestDB(t,
+			queryStep("SELECT password_hash,active FROM users", []string{"password_hash", "active"}, row(string(hash), true)),
+			execErrorStep("UPDATE users SET password_hash", boom),
+		)
+		w := httptest.NewRecorder()
+		(&app{db: db, secret: secret}).changePassword(w, newRequest(oldPassword, "DifferentPass123!"))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestUserMutationDatabaseErrorsAreHandled(t *testing.T) {
+	t.Run("create user database error", func(t *testing.T) {
+		boom := errors.New("insert user failed")
+		db, script := openTestDB(t, execErrorStep("INSERT INTO users", boom))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.usersCreate(w, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"name":"Alice","email":"alice@example.com","password":"LongPassword12!","role":"staff"}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("update user database error", func(t *testing.T) {
+		boom := errors.New("update user failed")
+		db, script := openTestDB(t, execErrorStep("active=? WHERE id=?", boom))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.usersUpdate(w, httptest.NewRequest(http.MethodPatch, "/api/users", strings.NewReader(`{"id":8,"name":"Alice","role":"auditor","active":true}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+}
