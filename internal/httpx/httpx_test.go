@@ -1,9 +1,16 @@
 package httpx
 
 import (
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -23,35 +30,87 @@ func writeTempFile(t *testing.T, content string) string {
 	return path
 }
 
+func TestJSON(t *testing.T) {
+	w := httptest.NewRecorder()
+	JSON(w, http.StatusCreated, map[string]string{"status": "ok"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusCreated)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options=%q", got)
+	}
+	if !strings.Contains(w.Body.String(), `"status":"ok"`) {
+		t.Fatalf("body=%q", w.Body.String())
+	}
+}
+
+func TestInternalErrorDoesNotLeakDetails(t *testing.T) {
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	w := httptest.NewRecorder()
+	InternalError(w, errors.New("mysql password=secret"))
+	if strings.Contains(w.Body.String(), "secret") || !strings.Contains(w.Body.String(), internalErrorMsg) {
+		t.Fatalf("unexpected body=%q", w.Body.String())
+	}
+}
+
+func TestDecodeJSON(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		var body struct {
+			Name string `json:"name"`
+		}
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"Tropical"}`))
+		if err := DecodeJSON(r, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Name != "Tropical" {
+			t.Fatalf("name=%q", body.Name)
+		}
+	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		var body struct {
+			Name string `json:"name"`
+		}
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"Tropical","unknown":true}`))
+		if err := DecodeJSON(r, &body); err == nil {
+			t.Fatal("expected unknown field to fail")
+		}
+	})
+
+	t.Run("trailing json", func(t *testing.T) {
+		var body map[string]any
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"ok":true} {"second":true}`))
+		if err := DecodeJSON(r, &body); err == nil {
+			t.Fatal("expected trailing JSON to fail")
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		var body map[string]any
+		r := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
+		if err := DecodeJSON(r, &body); err == nil {
+			t.Fatal("expected empty body to fail")
+		}
+	})
+}
+
 func TestEnv(t *testing.T) {
 	tests := []struct {
 		name    string
 		key     string
 		envVal  string
-		fileVal string // kosong berarti tidak membuat file
+		fileVal string
 		want    string
 	}{
-		{
-			name:    "file before environment",
-			key:     "HTTPX_TEST_SECRET",
-			envVal:  fromEnvValue,
-			fileVal: fromFileValue + "\n",
-			want:    fromFileValue,
-		},
-		{
-			name:    "environment when file unset",
-			key:     "HTTPX_TEST_ENV",
-			envVal:  fromEnvPadded,
-			fileVal: "",
-			want:    fromEnvValue,
-		},
-		{
-			name:    "fallback when no configuration",
-			key:     "HTTPX_TEST_FALLBACK",
-			envVal:  "",
-			fileVal: "",
-			want:    fallbackValue,
-		},
+		{name: "file before environment", key: "HTTPX_TEST_SECRET", envVal: fromEnvValue, fileVal: fromFileValue + "\n", want: fromFileValue},
+		{name: "environment when file unset", key: "HTTPX_TEST_ENV", envVal: fromEnvPadded, want: fromEnvValue},
+		{name: "fallback when no configuration", key: "HTTPX_TEST_FALLBACK", want: fallbackValue},
 	}
 
 	for _, tt := range tests {
@@ -60,10 +119,8 @@ func TestEnv(t *testing.T) {
 			if tt.fileVal != "" {
 				secretFile = writeTempFile(t, tt.fileVal)
 			}
-
 			t.Setenv(tt.key, tt.envVal)
 			t.Setenv(tt.key+"_FILE", secretFile)
-
 			if got := Env(tt.key, fallbackValue); got != tt.want {
 				t.Fatalf(envErrFormat, got, tt.want)
 			}
@@ -75,13 +132,11 @@ func TestEnvPanicsWhenConfiguredFileCannotBeRead(t *testing.T) {
 	key := "HTTPX_TEST_MISSING_FILE"
 	t.Setenv(key, fromEnvValue)
 	t.Setenv(key+"_FILE", filepath.Join(t.TempDir(), "missing"))
-
 	defer func() {
 		if recover() == nil {
 			t.Fatal("Env() did not panic for an unreadable configured file")
 		}
 	}()
-
 	_ = Env(key, fallbackValue)
 }
 
@@ -89,12 +144,116 @@ func TestEnvPanicsWhenConfiguredFileIsEmpty(t *testing.T) {
 	key := "HTTPX_TEST_EMPTY_FILE"
 	secretFile := writeTempFile(t, "\n")
 	t.Setenv(key+"_FILE", secretFile)
-
 	defer func() {
 		if recover() == nil {
 			t.Fatal("Env() did not panic for an empty configured file")
 		}
 	}()
-
 	_ = Env(key, fallbackValue)
+}
+
+func TestSecretEnforcesMinimumLength(t *testing.T) {
+	t.Setenv("HTTPX_TEST_SECRET_LENGTH", "01234567890123456789012345678901")
+	if got := Secret("HTTPX_TEST_SECRET_LENGTH", "", 32); len(got) != 32 {
+		t.Fatalf("secret length=%d", len(got))
+	}
+
+	t.Setenv("HTTPX_TEST_SECRET_SHORT", "short")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("short secret should panic")
+		}
+	}()
+	_ = Secret("HTTPX_TEST_SECRET_SHORT", "", 32)
+}
+
+func TestBearerToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+		ok     bool
+	}{
+		{name: "valid", header: "Bearer abc.def", want: "abc.def", ok: true},
+		{name: "case insensitive scheme", header: "bearer token", want: "token", ok: true},
+		{name: "missing", ok: false},
+		{name: "wrong scheme", header: "Basic abc", ok: false},
+		{name: "empty token", header: "Bearer   ", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("Authorization", tt.header)
+			got, err := BearerToken(r)
+			if (err == nil) != tt.ok || got != tt.want {
+				t.Fatalf("BearerToken()=(%q,%v), want (%q, ok=%v)", got, err, tt.want, tt.ok)
+			}
+		})
+	}
+	if _, err := BearerToken(nil); err == nil {
+		t.Fatal("nil request should fail")
+	}
+}
+
+func TestRequestLoggerPropagatesRequestIDAndRecoversPanic(t *testing.T) {
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	t.Run("propagates valid request id", func(t *testing.T) {
+		h := RequestLogger("test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := RequestID(r.Context()); got != "trace-123" {
+				t.Fatalf("request id in context=%q", got)
+			}
+			if got := r.Header.Get("X-Request-ID"); got != "trace-123" {
+				t.Fatalf("request id header=%q", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		r.Header.Set("X-Request-ID", "trace-123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusNoContent || w.Header().Get("X-Request-ID") != "trace-123" {
+			t.Fatalf("status=%d response request id=%q", w.Code, w.Header().Get("X-Request-ID"))
+		}
+	})
+
+	t.Run("replaces invalid request id", func(t *testing.T) {
+		h := RequestLogger("test", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("X-Request-ID", "bad\nvalue")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if got := w.Header().Get("X-Request-ID"); got == "" || got == "bad\nvalue" {
+			t.Fatalf("generated request id=%q", got)
+		}
+	})
+
+	t.Run("recovers panic", func(t *testing.T) {
+		h := RequestLogger("test", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+		if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), internalErrorMsg) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestIncomingRequestID(t *testing.T) {
+	if got := incomingRequestID("abc-123:xyz"); got != "abc-123:xyz" {
+		t.Fatalf("valid id rejected: %q", got)
+	}
+	for _, invalid := range []string{"contains space", "../bad/request", strings.Repeat("a", 129)} {
+		if got := incomingRequestID(invalid); got != "" {
+			t.Fatalf("invalid id accepted: %q", got)
+		}
+	}
+}
+
+func TestNewServerDefaults(t *testing.T) {
+	s := NewServer(":8080", http.NotFoundHandler())
+	if s.Addr != ":8080" || s.ReadHeaderTimeout != 5*time.Second || s.ReadTimeout != 15*time.Second || s.IdleTimeout != 60*time.Second {
+		t.Fatalf("unexpected server defaults: %+v", s)
+	}
 }

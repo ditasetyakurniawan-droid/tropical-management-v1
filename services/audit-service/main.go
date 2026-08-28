@@ -9,6 +9,7 @@ import (
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	errIssueTitleRequired    = "issue title is required"
 	errInvalidSeverityStatus = "invalid severity or status"
 	errInvalidIssueStatus    = "invalid issue status"
+	errInvalidDueDate        = "invalid due date; expected YYYY-MM-DD"
 	errIDAndJSONRequired     = "id and valid json required"
 
 	// Severity values
@@ -119,6 +121,13 @@ type issue struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	db, err := dbx.Open(httpx.Env("AUDIT_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
@@ -137,7 +146,7 @@ func main() {
 	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -190,6 +199,15 @@ func validIssueStatus(v string) bool {
 	}
 }
 
+func validOptionalDate(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
+}
+
 // ============================================================
 // AUDITS
 // ============================================================
@@ -208,7 +226,7 @@ func (a *app) audits(w http.ResponseWriter, r *http.Request) {
 func (a *app) getAudits(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectAuditsQuery)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
@@ -217,13 +235,13 @@ func (a *app) getAudits(w http.ResponseWriter) {
 	for rows.Next() {
 		var x audit
 		if err := rows.Scan(&x.ID, &x.Restaurant, &x.Auditor, &x.Cleanliness, &x.SOP, &x.FoodQuality, &x.Score, &x.Notes, &x.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httpx.InternalError(w, err)
 			return
 		}
 		result = append(result, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, result)
@@ -249,7 +267,7 @@ func (a *app) createAudit(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.db.Exec(insertAuditQuery, x.Restaurant, x.Auditor, x.Cleanliness, x.SOP, x.FoodQuality, x.Score, x.Notes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
@@ -294,7 +312,7 @@ func (a *app) issues(w http.ResponseWriter, r *http.Request) {
 func (a *app) getIssues(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectIssuesQuery)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
@@ -303,13 +321,13 @@ func (a *app) getIssues(w http.ResponseWriter) {
 	for rows.Next() {
 		var x issue
 		if err := rows.Scan(&x.ID, &x.AuditID, &x.Title, &x.Severity, &x.Status, &x.AssignedTo, &x.DueDate, &x.CorrectiveAction, &x.CreatedAt, &x.UpdatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httpx.InternalError(w, err)
 			return
 		}
 		result = append(result, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, result)
@@ -335,7 +353,7 @@ func (a *app) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.db.Exec(insertIssueQuery, x.AuditID, x.Title, x.Severity, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
@@ -364,6 +382,9 @@ func validateIssue(x issue) string {
 	if !validIssueStatus(x.Status) {
 		return errInvalidSeverityStatus
 	}
+	if !validOptionalDate(x.DueDate) {
+		return errInvalidDueDate
+	}
 	return ""
 }
 
@@ -382,10 +403,14 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidIssueStatus)
 		return
 	}
+	if !validOptionalDate(x.DueDate) {
+		writeError(w, http.StatusBadRequest, errInvalidDueDate)
+		return
+	}
 
 	_, err := a.db.Exec(updateIssueQuery, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction, x.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
@@ -402,28 +427,32 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 // SUMMARY
 // ============================================================
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		return
+	}
 	score, err := a.avgScore30Days()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	open, err := a.countOpenIssues()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	overdue, err := a.countOverdueIssues()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	critical, err := a.countCriticalIssues()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 

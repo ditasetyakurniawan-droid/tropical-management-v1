@@ -1,72 +1,138 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestHealthCheck(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","service":"sales-service"}`))
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+func TestHealthzHandler(t *testing.T) {
 	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200 OK, got %d", w.Code)
+	healthzHandler(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), serviceName) {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}
 }
 
-func TestSalesEndpoints(t *testing.T) {
-	tests := []struct {
-		name           string
-		method         string
-		path           string
-		expectedStatus int
-	}{
-		{
-			name:           "Get Sales List Unauthorized",
-			method:         http.MethodGet,
-			path:           "/api/sales",
-			expectedStatus: http.StatusUnauthorized,
-		},
-		{
-			name:           "Method Not Allowed",
-			method:         http.MethodDelete,
-			path:           "/api/sales",
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-	}
+func TestNormalizeAndValidateSale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet && r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				auth := r.Header.Get("Authorization")
-				if auth == "" {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-			})
+	t.Run("defaults date and channel", func(t *testing.T) {
+		x := sale{Orders: 10, Revenue: 250000}
+		if !normalizeAndValidateSale(&x, now) {
+			t.Fatal("valid sale rejected")
+		}
+		if x.BusinessDate != "2026-08-29" || x.Channel != defaultChannel {
+			t.Fatalf("unexpected normalized sale: %+v", x)
+		}
+	})
 
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			w := httptest.NewRecorder()
+	t.Run("trims explicit values", func(t *testing.T) {
+		x := sale{BusinessDate: " 2026-08-28 ", Orders: 1, Revenue: 1, Channel: " takeaway "}
+		if !normalizeAndValidateSale(&x, now) || x.BusinessDate != "2026-08-28" || x.Channel != "takeaway" {
+			t.Fatalf("unexpected sale: %+v", x)
+		}
+	})
 
-			handler.ServeHTTP(w, req)
-
-			if w.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+	for name, x := range map[string]sale{
+		"invalid date":     {BusinessDate: "29-08-2026", Orders: 1, Revenue: 1},
+		"negative orders":  {Orders: -1, Revenue: 1},
+		"negative revenue": {Orders: 1, Revenue: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if normalizeAndValidateSale(&x, now) {
+				t.Fatalf("invalid sale accepted: %+v", x)
 			}
 		})
 	}
+}
+
+func TestSalesHandlersRejectInvalidRequestsBeforeDatabaseAccess(t *testing.T) {
+	a := &app{}
+
+	w := httptest.NewRecorder()
+	a.sales(w, httptest.NewRequest(http.MethodDelete, "/api/sales", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("delete status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createSale(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"business_date":"bad","orders":1,"revenue":10}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid sale status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createSale(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"orders":-1,"revenue":10}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("negative sale status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrateAndSalesDatabasePaths(t *testing.T) {
+	now := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
+	db, script := openTestDB(t,
+		execStep("CREATE TABLE IF NOT EXISTS sales_entries", 0, 0),
+		queryStep("FROM sales_entries ORDER BY", []string{"id", "business_date", "orders", "revenue", "channel", "created_at"},
+			row(int64(2), "2026-08-29", int64(4), float64(125000), "dine-in", now),
+			row(int64(1), "2026-08-28", int64(3), float64(90000), "takeaway", now.Add(-24*time.Hour))),
+		execStep("INSERT INTO sales_entries", 3, 1),
+		queryStep("FROM sales_entries WHERE business_date = CURDATE()", []string{"revenue", "orders"}, row(float64(215000), int64(7))),
+	)
+	a := &app{db: db}
+
+	if err := a.migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	a.sales(w, httptest.NewRequest(http.MethodGet, "/api/sales", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"business_date":"2026-08-29"`) {
+		t.Fatalf("get sales status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.sales(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"business_date":"2026-08-29","orders":2,"revenue":50000,"channel":" takeaway "}`)))
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"id":3`) || !strings.Contains(w.Body.String(), `"channel":"takeaway"`) {
+		t.Fatalf("create sale status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"sales_today":215000`) || !strings.Contains(w.Body.String(), `"orders_today":7`) {
+		t.Fatalf("summary status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
+}
+
+func TestSalesDatabaseErrorsAreHandled(t *testing.T) {
+	boom := errors.New("db unavailable")
+	db, script := openTestDB(t,
+		queryErrorStep("FROM sales_entries ORDER BY", boom),
+		execErrorStep("INSERT INTO sales_entries", boom),
+		queryErrorStep("FROM sales_entries WHERE business_date = CURDATE()", boom),
+	)
+	a := &app{db: db}
+
+	w := httptest.NewRecorder()
+	a.getSales(w)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("get error status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createSale(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"orders":1,"revenue":100}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create db error status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("summary error status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
 }

@@ -9,7 +9,13 @@ import (
 	"strings"
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 	"github.com/golang-jwt/jwt/v5"
+)
+
+const (
+	serviceName = "api-gateway"
+	listenAddr  = ":8080"
 )
 
 type gateway struct {
@@ -22,7 +28,14 @@ type route struct {
 }
 
 func main() {
-	g := &gateway{secret: []byte(httpx.Env("JWT_SECRET", "local-dev-secret-change-this-value"))}
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
+	g := &gateway{secret: []byte(httpx.Secret("JWT_SECRET", "local-dev-secret-change-this-value", 32))}
 	g.routes = []route{
 		{"/api/auth", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},
 		{"/api/users", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},
@@ -35,12 +48,14 @@ func main() {
 		{"/api/chat", proxy(httpx.Env("CHAT_SERVICE_URL", "http://chat-service:8080"))},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, 200, map[string]string{"status": "ok", "service": "api-gateway"})
-	})
+	mux.HandleFunc("/healthz", healthzHandler)
 	mux.Handle("/", g)
-	log.Println("api-gateway listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Println(serviceName + " listening on " + listenAddr)
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
+}
+
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
 }
 
 func proxy(raw string) *httputil.ReverseProxy {
@@ -48,12 +63,18 @@ func proxy(raw string) *httputil.ReverseProxy {
 	if err != nil {
 		panic(err)
 	}
-	return httputil.NewSingleHostReverseProxy(u)
+	p := httputil.NewSingleHostReverseProxy(u)
+	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("event=proxy_error request_id=%q upstream=%q error=%q", httpx.RequestID(r.Context()), u.Host, err)
+		httpx.JSON(w, http.StatusBadGateway, map[string]string{"error": "upstream service unavailable"})
+	}
+	return p
 }
 
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", httpx.Env("CORS_ORIGIN", "http://localhost:3000"))
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -82,7 +103,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, rt := range g.routes {
-		if strings.HasPrefix(r.URL.Path, rt.prefix) {
+		if pathMatchesPrefix(r.URL.Path, rt.prefix) {
 			rt.proxy.ServeHTTP(w, r)
 			return
 		}
@@ -95,7 +116,8 @@ func (g *gateway) claims(r *http.Request) (jwt.MapClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	token, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return g.secret, nil }, jwt.WithValidMethods([]string{"HS256"}))
+	token, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return g.secret, nil },
+		jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
@@ -110,7 +132,7 @@ func allowed(role, method, path string) bool {
 	if role != "admin" && role != "auditor" && role != "staff" {
 		return false
 	}
-	if strings.HasPrefix(path, "/api/chat") && (method == http.MethodGet || method == http.MethodPost) {
+	if pathMatchesPrefix(path, "/api/chat") && (method == http.MethodGet || method == http.MethodPost) {
 		return true
 	}
 	if role == "admin" {
@@ -119,11 +141,15 @@ func allowed(role, method, path string) bool {
 	if method == http.MethodGet {
 		return true
 	}
-	if role == "auditor" && (strings.HasPrefix(path, "/api/audits") || strings.HasPrefix(path, "/api/issues")) {
+	if role == "auditor" && (pathMatchesPrefix(path, "/api/audits") || pathMatchesPrefix(path, "/api/issues")) {
 		return true
 	}
-	if role == "staff" && strings.HasPrefix(path, "/api/sales") {
+	if role == "staff" && pathMatchesPrefix(path, "/api/sales") {
 		return true
 	}
 	return false
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }

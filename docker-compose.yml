@@ -24,24 +24,32 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: admin@tropical.local
       BOOTSTRAP_ADMIN_PASSWORD: ChangeThis123!
     depends_on: {mysql: {condition: service_healthy}}
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   audit-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: audit-service}}
     environment: {AUDIT_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_audit?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   inventory-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: inventory-service}}
     environment: {INVENTORY_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_inventory?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   sales-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: sales-service}}
     environment: {SALES_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_sales?parseTime=true&charset=utf8mb4"}
     depends_on: {mysql: {condition: service_healthy}}
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   chat-service:
@@ -51,6 +59,8 @@ services:
       # Production should override this through Vault with a dedicated tropical_chat database/user.
       CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4
     depends_on: {mysql: {condition: service_healthy}}
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   dashboard-service:
@@ -60,6 +70,8 @@ services:
       AUDIT_SERVICE_URL: http://audit-service:8080
       INVENTORY_SERVICE_URL: http://inventory-service:8080
     depends_on: [sales-service, audit-service, inventory-service]
+    volumes:
+      - app-logs:/var/log/tropical
     expose: ["8080"]
 
   api-gateway:
@@ -74,6 +86,8 @@ services:
       DASHBOARD_SERVICE_URL: http://dashboard-service:8080
       CHAT_SERVICE_URL: http://chat-service:8080
     depends_on: [auth-service, audit-service, inventory-service, sales-service, dashboard-service, chat-service]
+    volumes:
+      - app-logs:/var/log/tropical
     ports: ["8080:8080"]
 
   web:
@@ -86,3 +100,4 @@ services:
 
 volumes:
   mysql-data:
+  app-logs:

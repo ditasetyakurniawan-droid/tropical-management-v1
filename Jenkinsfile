@@ -7,6 +7,7 @@ pipeline {
         SONAR_HOST_URL    = 'http://sonar-dt:9000'
         SONAR_PROJECT     = 'tropical-management-v1'
         JENKINS_CONTAINER = 'jenkins-server'
+        MIN_GO_COVERAGE   = '65.0'
 
         // GitOps
         GITOPS_REPO       = 'github.com/ditasetyakurniawan-droid/tropical-management-gitops.git'
@@ -65,11 +66,22 @@ pipeline {
                       --volumes-from "$JENKINS_CONTAINER" \
                       -w "$WORKSPACE" \
                       -e HOME=/tmp \
+                      -e MIN_GO_COVERAGE="$MIN_GO_COVERAGE" \
                       golang:1.23-bookworm \
                       bash -c '
-                        go mod download &&
-                        go test -coverprofile=coverage.out ./... &&
-                        sed -i "s|github.com/ditasetyakurniawan-droid/tropical-management-v1/||g" coverage.out &&
+                        set -euo pipefail
+                        go mod download
+                        go mod verify
+                        go test -json -race -covermode=atomic -coverprofile=coverage.out ./... | tee go-test.json
+                        test -s coverage.out
+                        ./scripts/normalize-go-coverage.sh coverage.out coverage.sonar.out
+                        test -s coverage.sonar.out
+                        test -s go-test.json
+                        go tool cover -func=coverage.out | tee coverage-summary.txt
+                        TOTAL_COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | grep -oE "[0-9]+([.][0-9]+)?%" | tr -d "%")
+                        test -n "$TOTAL_COVERAGE"
+                        echo "Total Go coverage: ${TOTAL_COVERAGE}% (minimum ${MIN_GO_COVERAGE}%)"
+                        awk -v coverage="$TOTAL_COVERAGE" -v minimum="$MIN_GO_COVERAGE" "BEGIN { if ((coverage + 0) < (minimum + 0)) exit 1 }"
                         go vet ./...
                       '
                 '''
@@ -88,6 +100,8 @@ pipeline {
                       sh -c '
                         set -e
                         npm ci
+                        npm run test:coverage
+                        test -s coverage/lcov.info
                         npm run build
                         rm -rf node_modules .next
                       '
@@ -115,14 +129,8 @@ pipeline {
                           -e SONAR_TOKEN="$SONAR_TOKEN" \
                           sonarsource/sonar-scanner-cli:latest \
                           -Dsonar.host.url="$SONAR_HOST_URL" \
-                          -Dsonar.projectKey="$SONAR_PROJECT" \
-                          -Dsonar.projectName="Tropical Management" \
-                          -Dsonar.sources=. \
-                          -Dsonar.exclusions="**/node_modules/**,**/.next/**,**/.git/**,**/coverage/**,**/*_test.go" \
-                          -Dsonar.tests=. \
-                          -Dsonar.test.inclusions="**/*_test.go" \
-                          -Dsonar.go.coverage.reportPaths=coverage.out \
-                          -Dsonar.qualitygate.wait=false
+                          -Dsonar.qualitygate.wait=true \
+                          -Dsonar.qualitygate.timeout=300
                     '''
                 }
             }
@@ -279,6 +287,7 @@ pipeline {
         }
 
         always {
+            archiveArtifacts artifacts: 'coverage.out,coverage.sonar.out,coverage-summary.txt,go-test.json,web/coverage/lcov.info', allowEmptyArchive: true
             sh '''
                 rm -rf "$WORKSPACE/.docker-ci" || true
                 rm -rf "$WORKSPACE/gitops-repo" || true
