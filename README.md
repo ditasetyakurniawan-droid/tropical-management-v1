@@ -85,23 +85,27 @@ Do not reuse local development credentials in production.
 Start here when continuing development:
 
 - [`docs/DEVELOPMENT-NOTES.md`](docs/DEVELOPMENT-NOTES.md) - short daily cheat sheet
-- [`docs/DEVELOPER-GUIDE.md`](docs/DEVELOPER-GUIDE.md) - complete development handbook and current project documentation
 - [`docs/architecture.md`](docs/architecture.md) - architecture boundaries
 - [`docs/api.md`](docs/api.md) - API surface
 - [`docs/live-chat.md`](docs/live-chat.md) - General Live Chat design and acceptance
 - [`docs/local-development.md`](docs/local-development.md) - local Docker workflow
 - [`docs/cicd-gitops.md`](docs/cicd-gitops.md) - Jenkins/GitOps direction
 - [`docs/phase3-functional-hardening.md`](docs/phase3-functional-hardening.md) - Phase 3 acceptance notes
+- [`docs/observability-and-testing.md`](docs/observability-and-testing.md) - file logging, request tracing, tests, and Sonar coverage
+- [`docs/engineering-review.md`](docs/engineering-review.md) - remediation summary and residual risks
 
 ## Development commands
 
 ```bash
-# Backend
-go test ./...
-go vet ./...
+# Full local quality verification
+./scripts/verify-local.sh
 
-# Frontend
-cd web && npm install && npm run build
+# Or focused backend commands
+make coverage
+make vet
+
+# Frontend (clean, lockfile-reproducible install)
+cd web && npm ci && npm run build
 
 # Rebuild one backend service
 docker compose build audit-service && docker compose up -d audit-service
@@ -109,8 +113,12 @@ docker compose build audit-service && docker compose up -d audit-service
 # Rebuild frontend
 docker compose build web && docker compose up -d web
 
-# Logs
+# Logs (stdout)
 docker compose logs -f api-gateway
+
+# Copy the rotating gateway log file from the container
+mkdir -p logs
+docker cp "$(docker compose ps -q api-gateway):/var/log/tropical/api-gateway.log" ./logs/api-gateway.log
 ```
 
 Backend service ports are intentionally not published to the host. Test internal health through the Compose network when necessary.
@@ -148,12 +156,11 @@ The current SSE broker is in-memory. Message history is persisted in MySQL, but 
 
 ## Next technical milestone
 
-1. Add `*_FILE` secret support to Go services.
-2. Inject DB/JWT secrets from Vault.
-3. Push immutable service images to Harbor from Jenkins.
-4. Automate Jenkins updates to the GitOps repository.
-5. Add real Kubernetes Deployment/Service manifests.
-6. Configure Argo CD reconciliation.
-7. Add Ingress, SSE proxy settings, NetworkPolicy, HPA/PDB, and observability.
+1. Add MySQL-backed integration tests with ephemeral databases.
+2. Add frontend unit/component tests and LCOV ingestion into Sonar.
+3. Inject database/JWT secrets from Vault and rotate production credentials.
+4. Add OpenTelemetry plus centralized log aggregation for production.
+5. Replace chat in-memory live fan-out with Redis or NATS before horizontal scaling.
+6. Complete Kubernetes ingress/network policy/HPA/PDB hardening in the GitOps repository.
 
-See [`docs/DEVELOPER-GUIDE.md`](docs/DEVELOPER-GUIDE.md) for the full roadmap and implementation rules.
+See [`docs/engineering-review.md`](docs/engineering-review.md) for the current remediation status and residual risks.

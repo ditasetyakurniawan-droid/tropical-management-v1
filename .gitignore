@@ -12,3 +12,11 @@ bin/
 *.pem
 *.key
 kubeconfig
+
+# Local exported application logs
+logs/
+*.log.*
+coverage.out
+coverage.sonar.out
+coverage-summary.txt
+go-test.json

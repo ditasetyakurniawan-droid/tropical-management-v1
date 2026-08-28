@@ -2,6 +2,7 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 const TOKEN_KEY = "tropical_token";
 const USER_KEY = "tropical_user";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 function clearLegacyLocalStorage() {
   if (typeof window === "undefined") return;
@@ -68,11 +69,27 @@ export async function api(path, options = {}) {
     headers.Authorization = `Bearer ${jwt}`;
   }
 
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-    cache: "no-store",
-  });
+  const controller = options.signal ? null : new AbortController();
+  const timeout = controller
+    ? globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    : null;
+
+  let response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal || controller?.signal,
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Permintaan ke server melewati batas waktu.");
+    }
+    throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
+  }
 
   const payload = await response.json().catch(() => ({}));
 

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { API_URL, clearSession, setSession } from "../../lib/api";
 
+const LOGIN_TIMEOUT_MS = 15_000;
+
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,11 +21,14 @@ export default function Login() {
     event.preventDefault();
     setError("");
     setLoading(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS);
     try {
       const response = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
+        signal: controller.signal,
         cache: "no-store",
       });
       const data = await response.json();
@@ -33,9 +38,12 @@ export default function Login() {
       }
       setSession(data.token, data.user);
       window.location.replace("/");
-    } catch {
-      setError("API tidak dapat dihubungi. Pastikan backend sedang berjalan.");
+    } catch (err) {
+      setError(err?.name === "AbortError"
+        ? "Login melewati batas waktu. Silakan coba lagi."
+        : "API tidak dapat dihubungi. Pastikan backend sedang berjalan.");
     } finally {
+      window.clearTimeout(timeout);
       setLoading(false);
     }
   }

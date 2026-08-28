@@ -10,10 +10,12 @@ RUN go mod download && go mod verify
 
 COPY internal ./internal
 COPY services ./services
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/app ./services/${SERVICE}
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/app ./services/${SERVICE} && \
+    mkdir -p /out/logs
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/app /app
+COPY --from=build --chown=nonroot:nonroot /out/logs /var/log/tropical
 EXPOSE 8080
 USER nonroot:nonroot
 ENTRYPOINT ["/app"]

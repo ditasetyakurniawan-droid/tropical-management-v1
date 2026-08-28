@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
@@ -23,6 +25,7 @@ const (
 	errSalesUnavailable     = "sales service unavailable"
 	errAuditUnavailable     = "audit service unavailable"
 	errInventoryUnavailable = "inventory service unavailable"
+	errMethodNotAllowed     = "method not allowed"
 )
 
 type dashboardClient struct {
@@ -59,6 +62,13 @@ type dashboardResponse struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	c := &dashboardClient{
 		httpClient: &http.Client{Timeout: requestTimeout},
 		sales:      httpx.Env("SALES_SERVICE_URL", defaultSalesServiceURL),
@@ -71,7 +81,7 @@ func main() {
 	mux.HandleFunc("/api/dashboard", c.handleDashboard)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -87,8 +97,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // fetchJSON mengambil data JSON dari URL upstream dan memasukkannya ke dest.
-func (c *dashboardClient) fetchJSON(url string, dest any) error {
-	resp, err := c.httpClient.Get(url)
+func (c *dashboardClient) fetchJSON(ctx context.Context, url string, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	if requestID := httpx.RequestID(ctx); requestID != "" {
+		req.Header.Set("X-Request-ID", requestID)
+	}
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -109,22 +127,26 @@ func (c *dashboardClient) fetchJSON(url string, dest any) error {
 // DASHBOARD
 // ============================================================
 
-func (c *dashboardClient) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	sales, err := c.fetchSalesSummary()
+func (c *dashboardClient) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		return
+	}
+	sales, err := c.fetchSalesSummary(r.Context())
 	if err != nil {
 		log.Printf("sales service error: %v", err)
 		writeError(w, http.StatusBadGateway, errSalesUnavailable)
 		return
 	}
 
-	audit, err := c.fetchAuditSummary()
+	audit, err := c.fetchAuditSummary(r.Context())
 	if err != nil {
 		log.Printf("audit service error: %v", err)
 		writeError(w, http.StatusBadGateway, errAuditUnavailable)
 		return
 	}
 
-	inventory, err := c.fetchInventorySummary()
+	inventory, err := c.fetchInventorySummary(r.Context())
 	if err != nil {
 		log.Printf("inventory service error: %v", err)
 		writeError(w, http.StatusBadGateway, errInventoryUnavailable)
@@ -134,21 +156,21 @@ func (c *dashboardClient) handleDashboard(w http.ResponseWriter, _ *http.Request
 	httpx.JSON(w, http.StatusOK, buildDashboardResponse(sales, audit, inventory))
 }
 
-func (c *dashboardClient) fetchSalesSummary() (salesSummary, error) {
+func (c *dashboardClient) fetchSalesSummary(ctx context.Context) (salesSummary, error) {
 	var s salesSummary
-	err := c.fetchJSON(c.sales+summaryPath, &s)
+	err := c.fetchJSON(ctx, c.sales+summaryPath, &s)
 	return s, err
 }
 
-func (c *dashboardClient) fetchAuditSummary() (auditSummary, error) {
+func (c *dashboardClient) fetchAuditSummary(ctx context.Context) (auditSummary, error) {
 	var a auditSummary
-	err := c.fetchJSON(c.audit+summaryPath, &a)
+	err := c.fetchJSON(ctx, c.audit+summaryPath, &a)
 	return a, err
 }
 
-func (c *dashboardClient) fetchInventorySummary() (inventorySummary, error) {
+func (c *dashboardClient) fetchInventorySummary(ctx context.Context) (inventorySummary, error) {
 	var i inventorySummary
-	err := c.fetchJSON(c.inventory+summaryPath, &i)
+	err := c.fetchJSON(ctx, c.inventory+summaryPath, &i)
 	return i, err
 }
 

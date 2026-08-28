@@ -2,11 +2,21 @@ package dbx
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 )
+
+const (
+	defaultPingAttempts = 30
+	defaultPingDelay    = 2 * time.Second
+)
+
+type pinger interface {
+	Ping() error
+}
 
 // Open waits for MySQL because containers may start a few seconds before DB-dt/local MySQL is ready.
 func Open(dsn string) (*sql.DB, error) {
@@ -14,19 +24,46 @@ func Open(dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	configurePool(db)
+
+	if err := waitForPing(db, defaultPingAttempts, defaultPingDelay, time.Sleep); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func configurePool(db *sql.DB) {
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(3 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
+}
+
+func waitForPing(db pinger, attempts int, delay time.Duration, sleep func(time.Duration)) error {
+	if attempts < 1 {
+		return fmt.Errorf("mysql ping attempts must be positive")
+	}
+	if sleep == nil {
+		sleep = time.Sleep
+	}
 
 	var lastErr error
-	for attempt := 1; attempt <= 30; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := db.Ping(); err == nil {
-			return db, nil
+			return nil
 		} else {
 			lastErr = err
 		}
-		time.Sleep(2 * time.Second)
+		if attempt < attempts && delay > 0 {
+			sleep(delay)
+		}
 	}
-	_ = db.Close()
-	return nil, fmt.Errorf("mysql unavailable after retries: %w", lastErr)
+	return fmt.Errorf("mysql unavailable after %d attempts: %w", attempts, lastErr)
+}
+
+// IsDuplicateKey reports whether err is a MySQL duplicate-entry error.
+func IsDuplicateKey(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }

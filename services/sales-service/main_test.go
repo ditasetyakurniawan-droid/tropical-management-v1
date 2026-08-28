@@ -3,70 +3,70 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestHealthCheck(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","service":"sales-service"}`))
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+func TestHealthzHandler(t *testing.T) {
 	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200 OK, got %d", w.Code)
+	healthzHandler(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), serviceName) {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}
 }
 
-func TestSalesEndpoints(t *testing.T) {
-	tests := []struct {
-		name           string
-		method         string
-		path           string
-		expectedStatus int
-	}{
-		{
-			name:           "Get Sales List Unauthorized",
-			method:         http.MethodGet,
-			path:           "/api/sales",
-			expectedStatus: http.StatusUnauthorized,
-		},
-		{
-			name:           "Method Not Allowed",
-			method:         http.MethodDelete,
-			path:           "/api/sales",
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-	}
+func TestNormalizeAndValidateSale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet && r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				auth := r.Header.Get("Authorization")
-				if auth == "" {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-			})
+	t.Run("defaults date and channel", func(t *testing.T) {
+		x := sale{Orders: 10, Revenue: 250000}
+		if !normalizeAndValidateSale(&x, now) {
+			t.Fatal("valid sale rejected")
+		}
+		if x.BusinessDate != "2026-08-29" || x.Channel != defaultChannel {
+			t.Fatalf("unexpected normalized sale: %+v", x)
+		}
+	})
 
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			w := httptest.NewRecorder()
+	t.Run("trims explicit values", func(t *testing.T) {
+		x := sale{BusinessDate: " 2026-08-28 ", Orders: 1, Revenue: 1, Channel: " takeaway "}
+		if !normalizeAndValidateSale(&x, now) || x.BusinessDate != "2026-08-28" || x.Channel != "takeaway" {
+			t.Fatalf("unexpected sale: %+v", x)
+		}
+	})
 
-			handler.ServeHTTP(w, req)
-
-			if w.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+	for name, x := range map[string]sale{
+		"invalid date":     {BusinessDate: "29-08-2026", Orders: 1, Revenue: 1},
+		"negative orders":  {Orders: -1, Revenue: 1},
+		"negative revenue": {Orders: 1, Revenue: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if normalizeAndValidateSale(&x, now) {
+				t.Fatalf("invalid sale accepted: %+v", x)
 			}
 		})
+	}
+}
+
+func TestSalesHandlersRejectInvalidRequestsBeforeDatabaseAccess(t *testing.T) {
+	a := &app{}
+
+	w := httptest.NewRecorder()
+	a.sales(w, httptest.NewRequest(http.MethodDelete, "/api/sales", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("delete status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createSale(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"business_date":"bad","orders":1,"revenue":10}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid sale status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.createSale(w, httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{"orders":-1,"revenue":10}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("negative sale status=%d body=%q", w.Code, w.Body.String())
 	}
 }

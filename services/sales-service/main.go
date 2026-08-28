@@ -9,6 +9,7 @@ import (
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
@@ -60,6 +61,13 @@ type sale struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	db, err := dbx.Open(httpx.Env("SALES_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
@@ -77,7 +85,7 @@ func main() {
 	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -115,14 +123,14 @@ func (a *app) sales(w http.ResponseWriter, r *http.Request) {
 func (a *app) getSales(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectSalesQuery, defaultSalesListLimit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
 
 	out, err := scanSales(rows)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, out)
@@ -150,14 +158,9 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	x.BusinessDate = strings.TrimSpace(x.BusinessDate)
-	if x.BusinessDate == "" {
-		x.BusinessDate = time.Now().Format(dateFormat)
-	}
-
-	x.Channel = strings.TrimSpace(x.Channel)
-	if x.Channel == "" {
-		x.Channel = defaultChannel
+	if !normalizeAndValidateSale(&x, time.Now()) {
+		writeError(w, http.StatusBadRequest, errInvalidSalesData)
+		return
 	}
 
 	res, err := a.db.Exec(insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
@@ -168,7 +171,7 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
@@ -177,14 +180,33 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, x)
 }
 
+func normalizeAndValidateSale(x *sale, now time.Time) bool {
+	x.BusinessDate = strings.TrimSpace(x.BusinessDate)
+	if x.BusinessDate == "" {
+		x.BusinessDate = now.Format(dateFormat)
+	} else if _, err := time.Parse(dateFormat, x.BusinessDate); err != nil {
+		return false
+	}
+
+	x.Channel = strings.TrimSpace(x.Channel)
+	if x.Channel == "" {
+		x.Channel = defaultChannel
+	}
+	return x.Orders >= 0 && x.Revenue >= 0
+}
+
 // ============================================================
 // SUMMARY
 // ============================================================
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		return
+	}
 	revenue, orders, err := a.getTodaySummary()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 

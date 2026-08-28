@@ -15,6 +15,7 @@ import (
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
@@ -35,7 +36,6 @@ const (
 	errUnauthorized         = "unauthorized"
 	errTrustedHeaders       = "trusted gateway identity headers required"
 	errStreamingUnsupported = "streaming unsupported"
-	errPersistMessage       = "failed to persist chat message"
 
 	// Limits
 	defaultMessageLimit = 100
@@ -111,6 +111,13 @@ type app struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	db, err := dbx.Open(httpx.Env("CHAT_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
@@ -128,7 +135,7 @@ func main() {
 	mux.HandleFunc("/api/chat/stream", a.handleStream)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -200,14 +207,14 @@ func (a *app) getMessages(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.db.Query(selectMessagesQuery, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
 
 	result, err := scanChatMessages(rows, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
@@ -264,7 +271,7 @@ func (a *app) postMessage(w http.ResponseWriter, r *http.Request, userID, userNa
 
 	msg, err := a.persistMessage(userID, userName, role, body)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errPersistMessage)
+		httpx.InternalError(w, err)
 		return
 	}
 

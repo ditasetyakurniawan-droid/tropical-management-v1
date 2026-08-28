@@ -10,6 +10,7 @@ import (
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
@@ -128,6 +129,13 @@ type movement struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	db, err := dbx.Open(httpx.Env("INVENTORY_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
@@ -148,7 +156,7 @@ func main() {
 	mux.HandleFunc("/internal/summary", a.summary)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -191,14 +199,14 @@ func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
 func (a *app) getItems(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectItemsQuery)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
 
 	out, err := scanItems(rows)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, out)
@@ -240,7 +248,7 @@ func (a *app) createItem(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errSKUExistsSentinel) {
 			writeError(w, http.StatusConflict, errSKUExists)
 		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httpx.InternalError(w, err)
 		}
 		return
 	}
@@ -269,7 +277,10 @@ func (a *app) insertItemWithMovement(x item) (int64, error) {
 
 	res, err := tx.Exec(insertItemQuery, x.SKU, x.Name, x.Unit, x.Stock, x.ReorderLevel, x.SupplierID)
 	if err != nil {
-		return 0, errSKUExistsSentinel
+		if dbx.IsDuplicateKey(err) {
+			return 0, errSKUExistsSentinel
+		}
+		return 0, err
 	}
 
 	id, err := res.LastInsertId()
@@ -317,7 +328,7 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errStockNegativeSentinel):
 			writeError(w, http.StatusBadRequest, errStockNegative)
 		default:
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httpx.InternalError(w, err)
 		}
 		return
 	}
@@ -378,7 +389,7 @@ func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 
 	out, err := a.getMovements()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, out)
@@ -423,14 +434,14 @@ func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
 func (a *app) getSuppliers(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectSuppliersQuery)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
 
 	out, err := scanSuppliers(rows)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, out)
@@ -469,13 +480,13 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.db.Exec(insertSupplierQuery, x.Name, x.Contact, x.Phone)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	x.ID = id
@@ -487,22 +498,26 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 // SUMMARY
 // ============================================================
 
-func (a *app) summary(w http.ResponseWriter, _ *http.Request) {
+func (a *app) summary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		return
+	}
 	alerts, err := a.countAlerts()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	total, err := a.countTotalItems()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
 	stockValue, err := a.sumStock()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 

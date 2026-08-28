@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -33,20 +36,17 @@ const (
 	errInvalidJSON              = "invalid json"
 	errUnauthorized             = "unauthorized"
 	errInvalidCredentials       = "invalid credentials or inactive user"
-	errTokenGenerationFailed    = "token generation failed"
 	errInvalidSession           = "invalid session"
 	errAccountUnavailable       = "account unavailable"
 	errCurrentPasswordIncorrect = "current password is incorrect"
-	errPasswordHashingFailed    = "password hashing failed"
-	errPasswordUpdateFailed     = "password update failed"
 	errNewPasswordTooShort      = "new password must be at least 12 characters"
 	errNewPasswordSameAsCurrent = "new password must be different from current password"
 	errAdminRoleRequired        = "admin role required"
-	errInvalidUserInput         = "name/email required, password min 8 chars, and role must be admin/auditor/staff"
+	errInvalidUserInput         = "name/email required, password min 12 chars, and role must be admin/auditor/staff"
 	errUserAlreadyExists        = "user already exists or invalid"
 	errIDAndJSONRequired        = "id and valid json required"
 	errNameAndRoleRequired      = "name and valid role required"
-	errNewPasswordTooShort8     = "new password must be at least 8 characters"
+	errNewPasswordTooShort12    = "new password must be at least 12 characters"
 
 	// SQL queries
 	createUsersTable = `CREATE TABLE IF NOT EXISTS users (
@@ -92,6 +92,13 @@ type user struct {
 }
 
 func main() {
+	closeLog, logErr := logx.Configure(serviceName)
+	if logErr != nil {
+		log.Printf("event=log_config_error error=%q", logErr)
+	} else {
+		defer closeLog()
+	}
+
 	db, err := dbx.Open(httpx.Env("AUTH_DB_DSN", defaultDSN))
 	if err != nil {
 		log.Fatal(err)
@@ -100,7 +107,7 @@ func main() {
 
 	a := &app{
 		db:     db,
-		secret: []byte(httpx.Env("JWT_SECRET", defaultJWTSecret)),
+		secret: []byte(httpx.Secret("JWT_SECRET", defaultJWTSecret, 32)),
 	}
 	if err := a.migrate(); err != nil {
 		log.Fatal(err)
@@ -117,7 +124,7 @@ func main() {
 	mux.HandleFunc("/api/users", a.users)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
@@ -149,6 +156,9 @@ func (a *app) migrate() error {
 func (a *app) bootstrapAdmin() error {
 	email := normalizeEmail(httpx.Env("BOOTSTRAP_ADMIN_EMAIL", defaultBootstrapAdminEmail))
 	password := httpx.Env("BOOTSTRAP_ADMIN_PASSWORD", defaultBootstrapAdminPass)
+	if !validPassword(password) {
+		return fmt.Errorf("bootstrap admin password must be at least 12 characters")
+	}
 
 	var count int
 	if err := a.db.QueryRow(countUserByEmail, email).Scan(&count); err != nil {
@@ -186,7 +196,15 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	err := a.db.QueryRow(selectUserForLogin, email).Scan(
 		&u.ID, &u.Name, &u.Email, &hash, &u.Role, &u.Active,
 	)
-	if err != nil || !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusUnauthorized, errInvalidCredentials)
+		} else {
+			httpx.InternalError(w, err)
+		}
+		return
+	}
+	if !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, errInvalidCredentials)
 		return
 	}
@@ -203,7 +221,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(a.secret)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errTokenGenerationFailed)
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"token": signed, "user": u})
@@ -215,7 +233,7 @@ func (a *app) parseClaims(r *http.Request) (jwt.MapClaims, error) {
 		return nil, err
 	}
 	token, err := jwt.Parse(raw, func(token *jwt.Token) (any, error) { return a.secret, nil },
-		jwt.WithValidMethods([]string{"HS256"}))
+		jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
@@ -262,7 +280,7 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
-	if len(input.NewPassword) < 12 {
+	if !validPassword(input.NewPassword) {
 		writeError(w, http.StatusBadRequest, errNewPasswordTooShort)
 		return
 	}
@@ -284,15 +302,19 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	newHash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
+		httpx.InternalError(w, err)
 		return
 	}
 	if _, err := a.db.Exec(updateUserPassword, string(newHash), email); err != nil {
-		writeError(w, http.StatusInternalServerError, errPasswordUpdateFailed)
+		httpx.InternalError(w, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "password updated; sign in again"})
+}
+
+func validPassword(password string) bool {
+	return len(password) >= 12
 }
 
 func validRole(role string) bool {
@@ -329,7 +351,7 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 func (a *app) usersList(w http.ResponseWriter) {
 	rows, err := a.db.Query(selectUsersList)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	defer rows.Close()
@@ -338,13 +360,13 @@ func (a *app) usersList(w http.ResponseWriter) {
 	for rows.Next() {
 		var u user
 		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Active); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httpx.InternalError(w, err)
 			return
 		}
 		result = append(result, u)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, result)
@@ -367,7 +389,7 @@ func (in *usersCreateInput) sanitize() {
 
 // valid memeriksa apakah input POST sudah lengkap dan sah.
 func (in usersCreateInput) valid() bool {
-	return in.Name != "" && in.Email != "" && len(in.Password) >= 8 && validRole(in.Role)
+	return in.Name != "" && in.Email != "" && validPassword(in.Password) && validRole(in.Role)
 }
 
 // usersCreate menangani POST /api/users.
@@ -385,13 +407,17 @@ func (a *app) usersCreate(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errPasswordHashingFailed)
+		httpx.InternalError(w, err)
 		return
 	}
 
 	res, err := a.db.Exec(insertUser, input.Name, input.Email, string(hash), input.Role)
 	if err != nil {
-		writeError(w, http.StatusConflict, errUserAlreadyExists)
+		if dbx.IsDuplicateKey(err) {
+			writeError(w, http.StatusConflict, errUserAlreadyExists)
+		} else {
+			httpx.InternalError(w, err)
+		}
 		return
 	}
 	id, _ := res.LastInsertId()
@@ -432,13 +458,13 @@ func (a *app) usersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errNameAndRoleRequired)
 		return
 	}
-	if input.Password != "" && len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, errNewPasswordTooShort8)
+	if input.Password != "" && !validPassword(input.Password) {
+		writeError(w, http.StatusBadRequest, errNewPasswordTooShort12)
 		return
 	}
 
 	if err := a.applyUserUpdate(input); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
 
