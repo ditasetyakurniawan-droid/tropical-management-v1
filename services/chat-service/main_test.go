@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,5 +139,99 @@ func TestChatHandlersRejectInvalidRequestsBeforeDatabaseAccess(t *testing.T) {
 	a.handleStream(w, httptest.NewRequest(http.MethodPost, "/api/chat/stream", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("stream post status=%d", w.Code)
+	}
+}
+
+func TestChatDatabasePaths(t *testing.T) {
+	now := time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC)
+	db, script := openTestDB(t,
+		execStep("CREATE TABLE IF NOT EXISTS chat_messages", 0, 0),
+		queryStep("FROM chat_messages ORDER BY id DESC", []string{"id", "user_id", "user_name", "role", "body", "created_at"},
+			row(int64(2), "2", "Bob", roleAuditor, "second", now),
+			row(int64(1), "1", "Alice", roleStaff, "first", now.Add(-time.Minute))),
+		execStep("INSERT INTO chat_messages", 3, 1),
+	)
+	a := &app{db: db, broker: newBroker()}
+
+	if err := a.migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/messages?limit=2", nil)
+	req.Header.Set("X-User-ID", "1")
+	req.Header.Set("X-User-Name", "Alice")
+	req.Header.Set("X-User-Role", roleStaff)
+	w := httptest.NewRecorder()
+	a.handleMessages(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"body":"first"`) {
+		t.Fatalf("messages status=%d body=%q", w.Code, w.Body.String())
+	}
+	if strings.Index(w.Body.String(), `"first"`) > strings.Index(w.Body.String(), `"second"`) {
+		t.Fatalf("messages were not returned oldest-first: %q", w.Body.String())
+	}
+
+	client := a.broker.subscribe()
+	defer a.broker.unsubscribe(client)
+	post := httptest.NewRequest(http.MethodPost, "/api/chat/messages", strings.NewReader(`{"body":" hello team "}`))
+	post.Header.Set("X-User-ID", "1")
+	post.Header.Set("X-User-Name", "Alice")
+	post.Header.Set("X-User-Role", roleStaff)
+	w = httptest.NewRecorder()
+	a.handleMessages(w, post)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"id":3`) || !strings.Contains(w.Body.String(), `"body":"hello team"`) {
+		t.Fatalf("post status=%d body=%q", w.Code, w.Body.String())
+	}
+	select {
+	case msg := <-client:
+		if msg.ID != 3 || msg.Body != "hello team" {
+			t.Fatalf("published message=%+v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message was not published to broker")
+	}
+	script.assertDone(t)
+}
+
+func TestChatDatabaseErrorsAreHandled(t *testing.T) {
+	boom := errors.New("db unavailable")
+	db, script := openTestDB(t,
+		queryErrorStep("FROM chat_messages ORDER BY id DESC", boom),
+		execErrorStep("INSERT INTO chat_messages", boom),
+	)
+	a := &app{db: db, broker: newBroker()}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/messages", nil)
+	req.Header.Set("X-User-ID", "1")
+	req.Header.Set("X-User-Name", "Alice")
+	req.Header.Set("X-User-Role", roleStaff)
+	w := httptest.NewRecorder()
+	a.handleMessages(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("query error status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.postMessage(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"body":"hello"}`)), "1", "Alice", roleStaff)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("insert error status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
+}
+
+func TestHandleStreamConnectsAndStopsOnCanceledContext(t *testing.T) {
+	a := &app{broker: newBroker()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil).WithContext(ctx)
+	req.Header.Set("X-User-ID", "1")
+	req.Header.Set("X-User-Name", "Alice")
+	req.Header.Set("X-User-Role", roleStaff)
+	w := httptest.NewRecorder()
+	a.handleStream(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), ": connected") {
+		t.Fatalf("stream status=%d body=%q", w.Code, w.Body.String())
+	}
+	if len(a.broker.clients) != 0 {
+		t.Fatalf("stream client leak: %d", len(a.broker.clients))
 	}
 }

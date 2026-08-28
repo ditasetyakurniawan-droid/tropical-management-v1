@@ -7,6 +7,7 @@ pipeline {
         SONAR_HOST_URL    = 'http://sonar-dt:9000'
         SONAR_PROJECT     = 'tropical-management-v1'
         JENKINS_CONTAINER = 'jenkins-server'
+        MIN_GO_COVERAGE   = '65.0'
 
         // GitOps
         GITOPS_REPO       = 'github.com/ditasetyakurniawan-droid/tropical-management-gitops.git'
@@ -65,6 +66,7 @@ pipeline {
                       --volumes-from "$JENKINS_CONTAINER" \
                       -w "$WORKSPACE" \
                       -e HOME=/tmp \
+                      -e MIN_GO_COVERAGE="$MIN_GO_COVERAGE" \
                       golang:1.23-bookworm \
                       bash -c '
                         set -euo pipefail
@@ -76,8 +78,10 @@ pipeline {
                         test -s coverage.sonar.out
                         test -s go-test.json
                         go tool cover -func=coverage.out | tee coverage-summary.txt
-                        TOTAL_COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | tr -s " " | cut -d" " -f3 | tr -d "%")
-                        awk -v coverage="$TOTAL_COVERAGE" "BEGIN { if ((coverage + 0) <= 0) exit 1 }"
+                        TOTAL_COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | grep -oE "[0-9]+([.][0-9]+)?%" | tr -d "%")
+                        test -n "$TOTAL_COVERAGE"
+                        echo "Total Go coverage: ${TOTAL_COVERAGE}% (minimum ${MIN_GO_COVERAGE}%)"
+                        awk -v coverage="$TOTAL_COVERAGE" -v minimum="$MIN_GO_COVERAGE" "BEGIN { if ((coverage + 0) < (minimum + 0)) exit 1 }"
                         go vet ./...
                       '
                 '''
@@ -96,6 +100,8 @@ pipeline {
                       sh -c '
                         set -e
                         npm ci
+                        npm run test:coverage
+                        test -s coverage/lcov.info
                         npm run build
                         rm -rf node_modules .next
                       '
@@ -281,7 +287,7 @@ pipeline {
         }
 
         always {
-            archiveArtifacts artifacts: 'coverage.out,coverage.sonar.out,coverage-summary.txt,go-test.json', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'coverage.out,coverage.sonar.out,coverage-summary.txt,go-test.json,web/coverage/lcov.info', allowEmptyArchive: true
             sh '''
                 rm -rf "$WORKSPACE/.docker-ci" || true
                 rm -rf "$WORKSPACE/gitops-repo" || true

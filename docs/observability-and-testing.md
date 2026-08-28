@@ -64,9 +64,9 @@ sonar.go.coverage.reportPaths=coverage.sonar.out
 sonar.go.tests.reportPaths=go-test.json
 ```
 
-The CI backend stage runs tests with the race detector and atomic coverage mode, verifies both generated reports are non-empty, validates the normalized coverage paths, produces a coverage summary, and fails if total Go coverage is zero. The Sonar stage waits for the Quality Gate and therefore blocks the main pipeline when the gate fails.
+The CI backend stage runs tests with the race detector and atomic coverage mode, verifies both generated reports are non-empty, validates the normalized coverage paths, produces a coverage summary, and enforces a minimum 65% overall Go statement coverage. The frontend stage generates LCOV with Node's built-in test runner and enforces 80% line/function and 70% branch coverage for tested library code. The Sonar stage waits for the Quality Gate and therefore blocks the main pipeline when the gate fails.
 
-This design intentionally keeps frontend source in Sonar analysis even though this repository currently has no JavaScript unit-test harness. Production frontend code is **not** excluded merely to inflate the coverage percentage.
+Production frontend source remains in Sonar analysis. `web/lib` now has dependency-free Node unit tests and LCOV ingestion; production UI files are **not** excluded merely to inflate the coverage percentage. See `docs/coverage-policy.md` for the exclusion policy and thresholds.
 
 ## Security-related runtime behavior
 

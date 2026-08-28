@@ -87,3 +87,27 @@ runtime build. The production dependency remains `github.com/go-sql-driver/mysql
 
 Formatting, shell syntax, Next.js package/lock consistency, the Sonar coverage normalizer,
 and the previously runnable race-test subset were rerun successfully after this patch.
+
+## Coverage hardening verification (PR #18 follow-up)
+
+The coverage-hardening pass added deterministic database-path tests for auth, audit, inventory, sales, and chat services, plus dependency-free Node tests for frontend library code.
+
+Measured with Go 1.23.2, race detector, atomic coverage mode, and temporary compile/test stubs only for external modules unavailable in the isolated verification environment:
+
+| Package | Coverage |
+| --- | ---: |
+| internal/dbx | 53.8% |
+| internal/httpx | 72.3% |
+| internal/logx | 78.7% |
+| api-gateway | 75.0% |
+| audit-service | 73.7% |
+| auth-service | 61.4% |
+| chat-service | 74.5% |
+| dashboard-service | 80.0% |
+| inventory-service | 71.3% |
+| sales-service | 67.5% |
+| **Overall Go** | **71.0%** |
+
+Frontend native Node tests: 10 passing tests. `web/lib` LCOV line coverage measured **94.7% (144/152)** and satisfies the configured 80% line/function and 70% branch thresholds.
+
+The external-module stubs are verification-only and are not part of the repository or generated patch. The real dependencies remain unchanged and must be exercised by the developer workstation/Jenkins, where module access is available.

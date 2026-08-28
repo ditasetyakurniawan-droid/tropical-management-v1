@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --experimental-default-type=module --test test/*.test.js",
+    "test:coverage": "mkdir -p coverage && node --experimental-default-type=module --test --experimental-test-coverage --test-coverage-include='lib/**/*.js' --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=70 --test-reporter=lcov test/*.test.js > coverage/lcov.info"
   },
   "dependencies": {
     "next": "16.3.3",

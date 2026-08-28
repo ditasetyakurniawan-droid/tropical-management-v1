@@ -2,6 +2,7 @@ package dbx
 
 import (
 	"errors"
+	mysql "github.com/go-sql-driver/mysql"
 	"strings"
 	"testing"
 	"time"
@@ -50,5 +51,17 @@ func TestWaitForPingReturnsLastError(t *testing.T) {
 func TestWaitForPingRejectsInvalidAttempts(t *testing.T) {
 	if err := waitForPing(&fakePinger{}, 0, 0, nil); err == nil {
 		t.Fatal("expected invalid attempt count to fail")
+	}
+}
+
+func TestIsDuplicateKey(t *testing.T) {
+	if !IsDuplicateKey(&mysql.MySQLError{Number: 1062, Message: "duplicate"}) {
+		t.Fatal("expected MySQL 1062 to be recognized as duplicate key")
+	}
+	if IsDuplicateKey(&mysql.MySQLError{Number: 1045, Message: "access denied"}) {
+		t.Fatal("non-duplicate MySQL error must not be recognized as duplicate key")
+	}
+	if IsDuplicateKey(errors.New("plain error")) {
+		t.Fatal("plain error must not be recognized as duplicate key")
 	}
 }

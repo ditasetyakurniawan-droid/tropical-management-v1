@@ -92,6 +92,7 @@ Start here when continuing development:
 - [`docs/cicd-gitops.md`](docs/cicd-gitops.md) - Jenkins/GitOps direction
 - [`docs/phase3-functional-hardening.md`](docs/phase3-functional-hardening.md) - Phase 3 acceptance notes
 - [`docs/observability-and-testing.md`](docs/observability-and-testing.md) - file logging, request tracing, tests, and Sonar coverage
+- [`docs/coverage-policy.md`](docs/coverage-policy.md) - coverage gates, exclusions, and Clean as You Code policy
 - [`docs/engineering-review.md`](docs/engineering-review.md) - remediation summary and residual risks
 
 ## Development commands

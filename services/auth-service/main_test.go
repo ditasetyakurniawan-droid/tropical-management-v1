@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func authToken(t *testing.T, secret []byte, claims jwt.MapClaims) string {
@@ -194,4 +196,97 @@ func TestUsersCreateAndUpdateValidationBeforeDatabaseAccess(t *testing.T) {
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "at least 12") {
 		t.Fatalf("update status=%d body=%q", w.Code, w.Body.String())
 	}
+}
+
+func TestAuthDatabasePaths(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	oldPassword := "CurrentPass123!"
+	hash, err := bcrypt.GenerateFromPassword([]byte(oldPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db, script := openTestDB(t,
+		execStep("CREATE TABLE IF NOT EXISTS users", 0, 0),
+		execStep("ALTER TABLE users ADD COLUMN active", 0, 0),
+		queryStep("SELECT COUNT(*) FROM users WHERE email", []string{"count"}, row(int64(1))),
+		queryStep("FROM users WHERE email", []string{"id", "name", "email", "password_hash", "role", "active"},
+			row(int64(7), "Admin User", "admin@example.com", string(hash), roleAdmin, true)),
+		queryStep("SELECT password_hash,active FROM users", []string{"password_hash", "active"}, row(string(hash), true)),
+		execStep("UPDATE users SET password_hash", 0, 1),
+		queryStep("SELECT id,name,email,role,active FROM users", []string{"id", "name", "email", "role", "active"},
+			row(int64(7), "Admin User", "admin@example.com", roleAdmin, true)),
+		execStep("INSERT INTO users", 8, 1),
+		execStep("UPDATE users SET name", 0, 1),
+	)
+	a := &app{db: db, secret: secret}
+
+	if err := a.migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := a.bootstrapAdmin(); err != nil {
+		t.Fatalf("bootstrap existing admin: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	a.login(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":" ADMIN@EXAMPLE.COM ","password":"CurrentPass123!"}`)))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token"`) || !strings.Contains(w.Body.String(), `"role":"admin"`) {
+		t.Fatalf("login status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentPass123!","new_password":"DifferentPass123!"}`))
+	req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAdmin)))
+	w = httptest.NewRecorder()
+	a.changePassword(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "password updated") {
+		t.Fatalf("change password status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	adminToken := authToken(t, secret, authClaims(roleAdmin))
+	req = httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w = httptest.NewRecorder()
+	a.users(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"admin@example.com"`) {
+		t.Fatalf("users list status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"name":" Alice ","email":" ALICE@EXAMPLE.COM ","password":"LongPassword12!","role":"staff"}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w = httptest.NewRecorder()
+	a.users(w, req)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"id":8`) || !strings.Contains(w.Body.String(), `"email":"alice@example.com"`) {
+		t.Fatalf("users create status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/users", strings.NewReader(`{"id":8,"name":" Alice Updated ","role":"auditor","active":true}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w = httptest.NewRecorder()
+	a.users(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"role":"auditor"`) {
+		t.Fatalf("users update status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
+}
+
+func TestAuthDatabaseErrorsAndCredentialFailures(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	db, script := openTestDB(t,
+		queryStep("FROM users WHERE email", []string{"id", "name", "email", "password_hash", "role", "active"}),
+		queryErrorStep("SELECT id,name,email,role,active FROM users", errors.New("db unavailable")),
+	)
+	a := &app{db: db, secret: secret}
+
+	w := httptest.NewRecorder()
+	a.login(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"nobody@example.com","password":"LongPassword12!"}`)))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing user status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.usersList(w)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("users list db error status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
 }
