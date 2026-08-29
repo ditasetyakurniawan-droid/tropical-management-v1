@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
@@ -79,8 +81,9 @@ const (
 )
 
 type app struct {
-	db     *sql.DB
-	secret []byte
+	db           *sql.DB
+	secret       []byte
+	queryTimeout time.Duration
 }
 
 type user struct {
@@ -99,15 +102,17 @@ func main() {
 		defer closeLog()
 	}
 
-	db, err := dbx.Open(httpx.Env("AUTH_DB_DSN", defaultDSN))
+	dbConfig := dbx.RuntimeConfig()
+	db, err := dbx.OpenWithConfig(configx.Sensitive("AUTH_DB_DSN", defaultDSN), dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
 	a := &app{
-		db:     db,
-		secret: []byte(httpx.Secret("JWT_SECRET", defaultJWTSecret, 32)),
+		db:           db,
+		secret:       []byte(configx.SensitiveSecret("JWT_SECRET", defaultJWTSecret, 32)),
+		queryTimeout: dbConfig.QueryTimeout,
 	}
 	if err := a.bootstrapAdmin(); err != nil {
 		log.Fatal(err)
@@ -144,26 +149,30 @@ func normalizeEmail(email string) string {
 }
 
 func (a *app) migrate() error {
-	if _, err := a.db.Exec(createUsersTable); err != nil {
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
+	if _, err := a.db.ExecContext(ctx, createUsersTable); err != nil {
 		return err
 	}
 	// Existing local databases from Phase 2 do not yet have the active flag.
 	// Duplicate-column errors are intentionally ignored so this remains restart-safe.
-	if _, err := a.db.Exec(alterUsersAddActive); err != nil {
+	if _, err := a.db.ExecContext(ctx, alterUsersAddActive); err != nil {
 		log.Printf("migrate warning: %v", err)
 	}
 	return nil
 }
 
 func (a *app) bootstrapAdmin() error {
-	email := normalizeEmail(httpx.Env("BOOTSTRAP_ADMIN_EMAIL", defaultBootstrapAdminEmail))
-	password := httpx.Env("BOOTSTRAP_ADMIN_PASSWORD", defaultBootstrapAdminPass)
+	email := normalizeEmail(configx.Sensitive("BOOTSTRAP_ADMIN_EMAIL", defaultBootstrapAdminEmail))
+	password := configx.Sensitive("BOOTSTRAP_ADMIN_PASSWORD", defaultBootstrapAdminPass)
 	if !validPassword(password) {
 		return fmt.Errorf("bootstrap admin password must be at least 12 characters")
 	}
 
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
 	var count int
-	if err := a.db.QueryRow(countUserByEmail, email).Scan(&count); err != nil {
+	if err := a.db.QueryRowContext(ctx, countUserByEmail, email).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
@@ -174,7 +183,7 @@ func (a *app) bootstrapAdmin() error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(insertUser, "Tropical Admin", email, string(hash), roleAdmin)
+	_, err = a.db.ExecContext(ctx, insertUser, "Tropical Admin", email, string(hash), roleAdmin)
 	return err
 }
 
@@ -195,7 +204,9 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	email := normalizeEmail(input.Email)
 	var u user
 	var hash string
-	err := a.db.QueryRow(selectUserForLogin, email).Scan(
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	err := a.db.QueryRowContext(ctx, selectUserForLogin, email).Scan(
 		&u.ID, &u.Name, &u.Email, &hash, &u.Role, &u.Active,
 	)
 	if err != nil {
@@ -291,9 +302,11 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
 	var hash string
 	var active bool
-	if err := a.db.QueryRow(selectUserPasswordByEmail, email).Scan(&hash, &active); err != nil || !active {
+	if err := a.db.QueryRowContext(ctx, selectUserPasswordByEmail, email).Scan(&hash, &active); err != nil || !active {
 		writeError(w, http.StatusUnauthorized, errAccountUnavailable)
 		return
 	}
@@ -307,7 +320,7 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, err)
 		return
 	}
-	if _, err := a.db.Exec(updateUserPassword, string(newHash), email); err != nil {
+	if _, err := a.db.ExecContext(ctx, updateUserPassword, string(newHash), email); err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
@@ -339,7 +352,7 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		a.usersList(w)
+		a.usersList(w, r)
 	case http.MethodPost:
 		a.usersCreate(w, r)
 	case http.MethodPatch:
@@ -350,8 +363,10 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 }
 
 // usersList menangani GET /api/users.
-func (a *app) usersList(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectUsersList)
+func (a *app) usersList(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectUsersList)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -413,7 +428,9 @@ func (a *app) usersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.db.Exec(insertUser, input.Name, input.Email, string(hash), input.Role)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertUser, input.Name, input.Email, string(hash), input.Role)
 	if err != nil {
 		if dbx.IsDuplicateKey(err) {
 			writeError(w, http.StatusConflict, errUserAlreadyExists)
@@ -465,7 +482,7 @@ func (a *app) usersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.applyUserUpdate(input); err != nil {
+	if err := a.applyUserUpdate(r.Context(), input); err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
@@ -480,9 +497,11 @@ func (a *app) usersUpdate(w http.ResponseWriter, r *http.Request) {
 
 // applyUserUpdate menjalankan query UPDATE yang sesuai, tergantung ada tidaknya
 // password baru.
-func (a *app) applyUserUpdate(input usersUpdateInput) error {
+func (a *app) applyUserUpdate(parent context.Context, input usersUpdateInput) error {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
 	if input.Password == "" {
-		_, err := a.db.Exec(updateUserWithoutPassword, input.Name, input.Role, input.Active, input.ID)
+		_, err := a.db.ExecContext(ctx, updateUserWithoutPassword, input.Name, input.Role, input.Active, input.ID)
 		return err
 	}
 
@@ -490,6 +509,6 @@ func (a *app) applyUserUpdate(input usersUpdateInput) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(updateUserWithPassword, input.Name, input.Role, input.Active, string(hash), input.ID)
+	_, err = a.db.ExecContext(ctx, updateUserWithPassword, input.Name, input.Role, input.Active, string(hash), input.ID)
 	return err
 }

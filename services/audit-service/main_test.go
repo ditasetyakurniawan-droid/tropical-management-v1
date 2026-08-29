@@ -197,7 +197,7 @@ func TestAuditDatabaseErrorsAreHandled(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	a.getAudits(w)
+	a.getAudits(w, httptest.NewRequest(http.MethodGet, "/api/audits", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("get audits error status=%d", w.Code)
 	}
@@ -284,7 +284,7 @@ func TestAuditIssueDatabaseErrorsAreHandled(t *testing.T) {
 	a := &app{db: db}
 
 	w := httptest.NewRecorder()
-	a.getIssues(w)
+	a.getIssues(w, httptest.NewRequest(http.MethodGet, "/api/issues", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("get issues status=%d body=%q", w.Code, w.Body.String())
 	}

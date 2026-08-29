@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 )
 
 const (
@@ -69,28 +71,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 }
 
 func Env(key, fallback string) string {
-	// Prefer file-based configuration when KEY_FILE is set. This is intended
-	// for secret injectors such as HashiCorp Vault Agent, Docker secrets, and
-	// Kubernetes-mounted secrets. If a file was explicitly configured, fail
-	// closed when it cannot be read instead of silently using a fallback.
-	if file := strings.TrimSpace(os.Getenv(key + "_FILE")); file != "" {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			panic(fmt.Sprintf("httpx.Env: read %s_FILE %q: %v", key, file, err))
-		}
-
-		value := strings.TrimSpace(string(data))
-		if value == "" {
-			panic(fmt.Sprintf("httpx.Env: %s_FILE %q is empty", key, file))
-		}
-
-		return value
-	}
-
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
+	return configx.Value(key, fallback)
 }
 
 // Secret reads a secret through Env and enforces a minimum byte length.

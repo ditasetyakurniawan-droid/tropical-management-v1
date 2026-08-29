@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
@@ -48,7 +50,8 @@ const (
 )
 
 type app struct {
-	db *sql.DB
+	db           *sql.DB
+	queryTimeout time.Duration
 }
 
 type sale struct {
@@ -68,13 +71,14 @@ func main() {
 		defer closeLog()
 	}
 
-	db, err := dbx.Open(httpx.Env("SALES_DB_DSN", defaultDSN))
+	dbConfig := dbx.RuntimeConfig()
+	db, err := dbx.OpenWithConfig(configx.Sensitive("SALES_DB_DSN", defaultDSN), dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	a := &app{db: db}
+	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -103,7 +107,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (a *app) migrate() error {
-	_, err := a.db.Exec(createSalesTable)
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, createSalesTable)
 	return err
 }
 
@@ -114,7 +120,7 @@ func (a *app) migrate() error {
 func (a *app) sales(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.getSales(w)
+		a.getSales(w, r)
 	case http.MethodPost:
 		a.createSale(w, r)
 	default:
@@ -122,8 +128,10 @@ func (a *app) sales(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) getSales(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectSalesQuery, defaultSalesListLimit)
+func (a *app) getSales(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectSalesQuery, defaultSalesListLimit)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -165,7 +173,9 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.db.Exec(insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errInvalidSalesData)
 		return
@@ -206,7 +216,7 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
-	revenue, orders, err := a.getTodaySummary()
+	revenue, orders, err := a.getTodaySummary(r.Context())
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -218,9 +228,11 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *app) getTodaySummary() (float64, int, error) {
+func (a *app) getTodaySummary(parent context.Context) (float64, int, error) {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
 	var revenue float64
 	var orders int
-	err := a.db.QueryRow(summaryQuery).Scan(&revenue, &orders)
+	err := a.db.QueryRowContext(ctx, summaryQuery).Scan(&revenue, &orders)
 	return revenue, orders, err
 }

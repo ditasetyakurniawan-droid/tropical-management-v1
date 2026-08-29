@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -190,7 +191,7 @@ func TestInventoryDatabaseErrorsAreHandled(t *testing.T) {
 	a := &app{db: db}
 
 	w := httptest.NewRecorder()
-	a.getItems(w)
+	a.getItems(w, httptest.NewRequest(http.MethodGet, "/api/inventory", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("items error status=%d", w.Code)
 	}
@@ -202,7 +203,7 @@ func TestInventoryDatabaseErrorsAreHandled(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	a.getSuppliers(w)
+	a.getSuppliers(w, httptest.NewRequest(http.MethodGet, "/api/suppliers", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("suppliers error status=%d", w.Code)
 	}
@@ -219,7 +220,7 @@ func TestInsertItemWithMovementAdditionalBranches(t *testing.T) {
 	t.Run("zero stock skips initial movement", func(t *testing.T) {
 		db, script := openTestDB(t, execStep("INSERT INTO inventory_items", 12, 1))
 		a := &app{db: db}
-		id, err := a.insertItemWithMovement(item{SKU: "SKU-12", Name: "Empty", Unit: "pcs", Stock: 0})
+		id, err := a.insertItemWithMovement(context.Background(), item{SKU: "SKU-12", Name: "Empty", Unit: "pcs", Stock: 0})
 		if err != nil || id != 12 {
 			t.Fatalf("id=%d err=%v", id, err)
 		}
@@ -230,7 +231,7 @@ func TestInsertItemWithMovementAdditionalBranches(t *testing.T) {
 		boom := errors.New("insert failed")
 		db, script := openTestDB(t, execErrorStep("INSERT INTO inventory_items", boom))
 		a := &app{db: db}
-		if _, err := a.insertItemWithMovement(item{SKU: "SKU-13", Name: "Item", Unit: "pcs", Stock: 1}); !errors.Is(err, boom) {
+		if _, err := a.insertItemWithMovement(context.Background(), item{SKU: "SKU-13", Name: "Item", Unit: "pcs", Stock: 1}); !errors.Is(err, boom) {
 			t.Fatalf("expected insert error, got %v", err)
 		}
 		script.assertDone(t)
@@ -243,7 +244,7 @@ func TestInsertItemWithMovementAdditionalBranches(t *testing.T) {
 			execErrorStep("INSERT INTO stock_movements", boom),
 		)
 		a := &app{db: db}
-		if _, err := a.insertItemWithMovement(item{SKU: "SKU-14", Name: "Item", Unit: "pcs", Stock: 2}); !errors.Is(err, boom) {
+		if _, err := a.insertItemWithMovement(context.Background(), item{SKU: "SKU-14", Name: "Item", Unit: "pcs", Stock: 2}); !errors.Is(err, boom) {
 			t.Fatalf("expected movement error, got %v", err)
 		}
 		script.assertDone(t)
