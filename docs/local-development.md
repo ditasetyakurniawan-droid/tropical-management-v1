@@ -4,7 +4,23 @@
 
 ```bash
 docker compose up -d --build
-docker compose ps
+docker compose ps -a
+```
+
+Local startup follows the same schema ownership model as Kubernetes:
+
+```text
+MySQL healthy
+  -> one-shot db-migrator
+  -> migrations complete
+  -> DB-backed application services start
+```
+
+`db-migrator` must finish with exit code `0`. Runtime services do not execute schema DDL during startup.
+
+```bash
+docker compose ps -a db-migrator
+docker compose logs db-migrator
 ```
 
 Open `http://localhost:3000`.
@@ -90,11 +106,35 @@ curl -s http://localhost:8080/api/auth/login \
 
 ## Reset local data
 
-Warning: this deletes the local MySQL volume.
+Warning: this deletes the local MySQL volume. Use this only when a clean local bootstrap is intended.
 
 ```bash
 docker compose down -v
 docker compose up -d --build
+docker compose ps -a
+```
+
+Verify the one-shot migration completed before testing the application:
+
+```bash
+docker compose ps -a db-migrator
+docker compose logs db-migrator
+```
+
+Expected migration log ends with:
+
+```text
+event=migration_run_completed targets=5
+```
+
+The fresh database should contain independent migration metadata for:
+
+```text
+tropical_auth
+tropical_audit
+tropical_inventory
+tropical_sales
+tropical_chat
 ```
 
 Use plain `docker compose down` when local data must be preserved.

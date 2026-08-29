@@ -16,6 +16,19 @@ services:
       timeout: 5s
       retries: 30
 
+  db-migrator:
+    build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: db-migrator}}
+    environment:
+      AUTH_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4
+      AUDIT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_audit?parseTime=true&charset=utf8mb4
+      INVENTORY_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_inventory?parseTime=true&charset=utf8mb4
+      SALES_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_sales?parseTime=true&charset=utf8mb4
+      CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_chat?parseTime=true&charset=utf8mb4
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
   auth-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: auth-service}}
     environment:
@@ -23,7 +36,11 @@ services:
       JWT_SECRET: local-dev-secret-change-this-value
       BOOTSTRAP_ADMIN_EMAIL: admin@tropical.local
       BOOTSTRAP_ADMIN_PASSWORD: ChangeThis123!
-    depends_on: {mysql: {condition: service_healthy}}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
     volumes:
       - app-logs:/var/log/tropical
     expose: ["8080"]
@@ -31,7 +48,11 @@ services:
   audit-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: audit-service}}
     environment: {AUDIT_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_audit?parseTime=true&charset=utf8mb4"}
-    depends_on: {mysql: {condition: service_healthy}}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
     volumes:
       - app-logs:/var/log/tropical
     expose: ["8080"]
@@ -39,7 +60,11 @@ services:
   inventory-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: inventory-service}}
     environment: {INVENTORY_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_inventory?parseTime=true&charset=utf8mb4"}
-    depends_on: {mysql: {condition: service_healthy}}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
     volumes:
       - app-logs:/var/log/tropical
     expose: ["8080"]
@@ -47,7 +72,11 @@ services:
   sales-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: sales-service}}
     environment: {SALES_DB_DSN: "tropical:tropical@tcp(mysql:3306)/tropical_sales?parseTime=true&charset=utf8mb4"}
-    depends_on: {mysql: {condition: service_healthy}}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
     volumes:
       - app-logs:/var/log/tropical
     expose: ["8080"]
@@ -55,10 +84,12 @@ services:
   chat-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: chat-service}}
     environment:
-      # Existing local volumes already contain tropical_auth, so chat can start without deleting local data.
-      # Production should override this through Vault with a dedicated tropical_chat database/user.
-      CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4
-    depends_on: {mysql: {condition: service_healthy}}
+      CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_chat?parseTime=true&charset=utf8mb4
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
     volumes:
       - app-logs:/var/log/tropical
     expose: ["8080"]
