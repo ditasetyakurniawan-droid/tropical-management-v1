@@ -135,9 +135,6 @@ func main() {
 	defer db.Close()
 
 	a := &app{db: db}
-	if err := a.migrate(); err != nil {
-		log.Fatal(err)
-	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)

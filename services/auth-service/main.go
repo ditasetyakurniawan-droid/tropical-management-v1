@@ -109,9 +109,6 @@ func main() {
 		db:     db,
 		secret: []byte(httpx.Secret("JWT_SECRET", defaultJWTSecret, 32)),
 	}
-	if err := a.migrate(); err != nil {
-		log.Fatal(err)
-	}
 	if err := a.bootstrapAdmin(); err != nil {
 		log.Fatal(err)
 	}
