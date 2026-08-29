@@ -62,12 +62,7 @@ type dashboardResponse struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	c := &dashboardClient{
 		httpClient: &http.Client{Timeout: requestTimeout},
@@ -77,9 +72,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0))
+	httpx.RegisterHealthRoutes(mux, serviceName)
 	mux.HandleFunc("/api/dashboard", c.handleDashboard)
 
 	log.Println(serviceName + " listening on " + listenAddr)
@@ -87,18 +80,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"service": serviceName,
-	})
-}
-
-// writeError mengirimkan JSON error yang konsisten.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 // fetchJSON mengambil data JSON dari URL upstream dan memasukkannya ke dest.
@@ -134,27 +115,27 @@ func (c *dashboardClient) fetchJSON(ctx context.Context, url string, dest any) e
 
 func (c *dashboardClient) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 	sales, err := c.fetchSalesSummary(r.Context())
 	if err != nil {
 		log.Printf("sales service error: %v", err)
-		writeError(w, http.StatusBadGateway, errSalesUnavailable)
+		httpx.WriteError(w, http.StatusBadGateway, errSalesUnavailable)
 		return
 	}
 
 	audit, err := c.fetchAuditSummary(r.Context())
 	if err != nil {
 		log.Printf("audit service error: %v", err)
-		writeError(w, http.StatusBadGateway, errAuditUnavailable)
+		httpx.WriteError(w, http.StatusBadGateway, errAuditUnavailable)
 		return
 	}
 
 	inventory, err := c.fetchInventorySummary(r.Context())
 	if err != nil {
 		log.Printf("inventory service error: %v", err)
-		writeError(w, http.StatusBadGateway, errInventoryUnavailable)
+		httpx.WriteError(w, http.StatusBadGateway, errInventoryUnavailable)
 		return
 	}
 

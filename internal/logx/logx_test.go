@@ -218,3 +218,47 @@ func TestRotatingWriterReportsBackupRemovalFailure(t *testing.T) {
 		t.Fatalf("expected backup removal error, got %v", err)
 	}
 }
+
+func TestConfigureBestEffort(t *testing.T) {
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	t.Run("returns real cleanup when configuration succeeds", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("LOG_DIR", dir)
+		t.Setenv("LOG_STDOUT", "false")
+		cleanup := ConfigureBestEffort("best-effort-service")
+		if cleanup == nil {
+			t.Fatal("cleanup must never be nil")
+		}
+		log.Print("best-effort-line")
+		cleanup()
+		content, err := os.ReadFile(filepath.Join(dir, "best-effort-service.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(content), "best-effort-line") {
+			t.Fatalf("log content=%q", content)
+		}
+	})
+
+	t.Run("falls back when file logging cannot initialize", func(t *testing.T) {
+		root := t.TempDir()
+		blocked := filepath.Join(root, "not-a-directory")
+		if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("LOG_DIR", blocked)
+		cleanup := ConfigureBestEffort("fallback-service")
+		if cleanup == nil {
+			t.Fatal("fallback cleanup must never be nil")
+		}
+		cleanup()
+	})
+}

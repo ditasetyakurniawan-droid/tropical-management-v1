@@ -118,12 +118,7 @@ type app struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	dbConfig := dbx.RuntimeConfig()
 	db, err := dbx.OpenWithConfig(configx.Sensitive("CHAT_DB_DSN", defaultDSN), dbConfig)
@@ -143,9 +138,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
+	httpx.RegisterHealthRoutes(mux, serviceName, httpx.DBReadinessCheck("mysql", db))
 	mux.HandleFunc("/api/chat/messages", a.handleMessages)
 	mux.HandleFunc("/api/chat/stream", a.handleStream)
 
@@ -154,14 +147,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 func (a *app) migrate() error {
@@ -208,7 +193,7 @@ func identity(r *http.Request) (userID, userName, role string, err error) {
 func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 	userID, userName, role, err := identity(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		httpx.WriteError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 
@@ -218,7 +203,7 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.postMessage(w, r, userID, userName, role)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -281,13 +266,13 @@ func (a *app) postMessage(w http.ResponseWriter, r *http.Request, userID, userNa
 		Body string `json:"body"`
 	}
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
 	body, err := cleanChatBody(input.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -330,13 +315,13 @@ func (a *app) persistMessage(parent context.Context, userID, userName, role, bod
 
 func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 
 	userID, _, _, err := identity(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		httpx.WriteError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 
@@ -344,7 +329,7 @@ func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 		if !a.streamLimiter.TryAcquire(userID) {
 			httpx.SetRetryAfter(w, 5*time.Second)
 			log.Printf("event=chat_stream_limited request_id=%q user_id=%q", httpx.RequestID(r.Context()), userID)
-			writeError(w, http.StatusTooManyRequests, "too many active chat streams")
+			httpx.WriteError(w, http.StatusTooManyRequests, "too many active chat streams")
 			return
 		}
 		defer a.streamLimiter.Release(userID)
@@ -352,7 +337,7 @@ func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, errStreamingUnsupported)
+		httpx.WriteError(w, http.StatusInternalServerError, errStreamingUnsupported)
 		return
 	}
 

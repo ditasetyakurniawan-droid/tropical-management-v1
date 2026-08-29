@@ -135,12 +135,7 @@ type user struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	dbConfig := dbx.RuntimeConfig()
 	db, err := dbx.OpenWithConfig(configx.Sensitive("AUTH_DB_DSN", defaultDSN), dbConfig)
@@ -160,9 +155,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
+	httpx.RegisterHealthRoutes(mux, serviceName, httpx.DBReadinessCheck("mysql", db))
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/change-password", a.changePassword)
@@ -173,15 +166,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-}
-
-// writeError mengirimkan JSON error yang konsisten.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 // normalizeEmail membersihkan dan menyeragamkan format email.
@@ -230,7 +214,7 @@ func (a *app) bootstrapAdmin() error {
 
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 	var input struct {
@@ -238,7 +222,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
@@ -246,7 +230,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	if allowed, retry := a.loginProtection.allow(email, time.Now()); !allowed {
 		httpx.SetRetryAfter(w, retry)
 		log.Printf("event=login_rate_limited request_id=%q", httpx.RequestID(r.Context()))
-		writeError(w, http.StatusTooManyRequests, "too many login attempts")
+		httpx.WriteError(w, http.StatusTooManyRequests, "too many login attempts")
 		return
 	}
 
@@ -259,14 +243,14 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusUnauthorized, errInvalidCredentials)
+			httpx.WriteError(w, http.StatusUnauthorized, errInvalidCredentials)
 		} else {
 			httpx.InternalError(w, err)
 		}
 		return
 	}
 	if !u.Active || bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
-		writeError(w, http.StatusUnauthorized, errInvalidCredentials)
+		httpx.WriteError(w, http.StatusUnauthorized, errInvalidCredentials)
 		return
 	}
 
@@ -308,7 +292,7 @@ func (a *app) parseClaims(r *http.Request) (jwt.MapClaims, error) {
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, errUnauthorized)
+		httpx.WriteError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, claims)
@@ -316,20 +300,20 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 
 	claims, err := a.parseClaims(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, errUnauthorized)
+		httpx.WriteError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 
 	email, _ := claims["email"].(string)
 	email = normalizeEmail(email)
 	if email == "" {
-		writeError(w, http.StatusUnauthorized, errInvalidSession)
+		httpx.WriteError(w, http.StatusUnauthorized, errInvalidSession)
 		return
 	}
 
@@ -338,15 +322,15 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 	if !validPassword(input.NewPassword) {
-		writeError(w, http.StatusBadRequest, errNewPasswordTooShort)
+		httpx.WriteError(w, http.StatusBadRequest, errNewPasswordTooShort)
 		return
 	}
 	if input.CurrentPassword == input.NewPassword {
-		writeError(w, http.StatusBadRequest, errNewPasswordSameAsCurrent)
+		httpx.WriteError(w, http.StatusBadRequest, errNewPasswordSameAsCurrent)
 		return
 	}
 
@@ -355,11 +339,11 @@ func (a *app) changePassword(w http.ResponseWriter, r *http.Request) {
 	var hash string
 	var active bool
 	if err := a.db.QueryRowContext(ctx, selectUserPasswordByEmail, email).Scan(&hash, &active); err != nil || !active {
-		writeError(w, http.StatusUnauthorized, errAccountUnavailable)
+		httpx.WriteError(w, http.StatusUnauthorized, errAccountUnavailable)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.CurrentPassword)) != nil {
-		writeError(w, http.StatusUnauthorized, errCurrentPasswordIncorrect)
+		httpx.WriteError(w, http.StatusUnauthorized, errCurrentPasswordIncorrect)
 		return
 	}
 
@@ -394,7 +378,7 @@ func validRole(role string) bool {
 func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
 	if err != nil || claims["role"] != roleAdmin {
-		writeError(w, http.StatusForbidden, errAdminRoleRequired)
+		httpx.WriteError(w, http.StatusForbidden, errAdminRoleRequired)
 		return
 	}
 
@@ -406,7 +390,7 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		a.usersUpdate(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -461,12 +445,12 @@ func (in usersCreateInput) valid() bool {
 func (a *app) usersCreate(w http.ResponseWriter, r *http.Request) {
 	var input usersCreateInput
 	if err := httpx.DecodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 	input.sanitize()
 	if !input.valid() {
-		writeError(w, http.StatusBadRequest, errInvalidUserInput)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidUserInput)
 		return
 	}
 
@@ -481,7 +465,7 @@ func (a *app) usersCreate(w http.ResponseWriter, r *http.Request) {
 	res, err := a.db.ExecContext(ctx, insertUser, input.Name, input.Email, string(hash), input.Role)
 	if err != nil {
 		if dbx.IsDuplicateKey(err) {
-			writeError(w, http.StatusConflict, errUserAlreadyExists)
+			httpx.WriteError(w, http.StatusConflict, errUserAlreadyExists)
 		} else {
 			httpx.InternalError(w, err)
 		}
@@ -516,17 +500,17 @@ func (in *usersUpdateInput) sanitize() {
 func (a *app) usersUpdate(w http.ResponseWriter, r *http.Request) {
 	var input usersUpdateInput
 	if err := httpx.DecodeJSON(r, &input); err != nil || input.ID == 0 {
-		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
+		httpx.WriteError(w, http.StatusBadRequest, errIDAndJSONRequired)
 		return
 	}
 	input.sanitize()
 
 	if input.Name == "" || !validRole(input.Role) {
-		writeError(w, http.StatusBadRequest, errNameAndRoleRequired)
+		httpx.WriteError(w, http.StatusBadRequest, errNameAndRoleRequired)
 		return
 	}
 	if input.Password != "" && !validPassword(input.Password) {
-		writeError(w, http.StatusBadRequest, errNewPasswordTooShort12)
+		httpx.WriteError(w, http.StatusBadRequest, errNewPasswordTooShort12)
 		return
 	}
 
