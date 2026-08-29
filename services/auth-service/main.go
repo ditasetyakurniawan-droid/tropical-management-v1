@@ -118,13 +118,18 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
+	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
 	mux.HandleFunc("/api/auth/login", a.login)
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/change-password", a.changePassword)
 	mux.HandleFunc("/api/users", a.users)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
+	server := httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux))
+	if err := httpx.RunServer(server, serviceName, 0); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {

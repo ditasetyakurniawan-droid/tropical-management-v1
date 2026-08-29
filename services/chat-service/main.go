@@ -131,11 +131,16 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
+	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
 	mux.HandleFunc("/api/chat/messages", a.handleMessages)
 	mux.HandleFunc("/api/chat/stream", a.handleStream)
 
 	log.Println(serviceName + " listening on " + listenAddr)
-	log.Fatal(httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux)).ListenAndServe())
+	server := httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux))
+	if err := httpx.RunServer(server, serviceName, 0); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {

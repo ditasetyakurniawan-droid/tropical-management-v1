@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -327,5 +328,100 @@ func TestDecodeJSONRejectsOversizedBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
 	if err := DecodeJSON(r, &body); err == nil {
 		t.Fatal("expected oversized JSON body to fail")
+	}
+}
+
+type fakeContextPinger struct {
+	err error
+}
+
+func (f fakeContextPinger) PingContext(context.Context) error {
+	return f.err
+}
+
+func TestLivenessHandler(t *testing.T) {
+	w := httptest.NewRecorder()
+	LivenessHandler("test-service").ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), `"status":"alive"`) || !strings.Contains(w.Body.String(), `"service":"test-service"`) {
+		t.Fatalf("unexpected body=%q", w.Body.String())
+	}
+}
+
+func TestReadinessHandler(t *testing.T) {
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	t.Run("ready", func(t *testing.T) {
+		check := DBReadinessCheck("mysql", fakeContextPinger{})
+		w := httptest.NewRecorder()
+		ReadinessHandler("test-service", time.Second, check).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"ready"`) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("dependency unavailable", func(t *testing.T) {
+		check := DBReadinessCheck("mysql", fakeContextPinger{err: errors.New("db unavailable")})
+		w := httptest.NewRecorder()
+		ReadinessHandler("test-service", time.Second, check).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"status":"not_ready"`) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "db unavailable") {
+			t.Fatalf("readiness response leaked dependency error: %q", w.Body.String())
+		}
+	})
+
+	t.Run("nil database handle", func(t *testing.T) {
+		var pinger interface {
+			PingContext(context.Context) error
+		}
+		check := DBReadinessCheck("mysql", pinger)
+		w := httptest.NewRecorder()
+		ReadinessHandler("test-service", 0, check).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+	})
+
+	t.Run("custom check failure", func(t *testing.T) {
+		check := ReadinessCheck{Name: "config", Check: func(context.Context) error { return errors.New("not initialized") }}
+		w := httptest.NewRecorder()
+		ReadinessHandler("test-service", time.Second, check).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+	})
+}
+
+func TestServeServerRejectsNilServer(t *testing.T) {
+	if err := ServeServer(context.Background(), nil, "test-service", time.Second); err == nil {
+		t.Fatal("expected nil server to fail")
+	}
+}
+
+func TestServeServerGracefulShutdown(t *testing.T) {
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server := NewServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err := ServeServer(ctx, server, "test-service", 250*time.Millisecond); err != nil {
+		t.Fatalf("ServeServer() error=%v", err)
+	}
+}
+
+func TestRunServerReturnsListenError(t *testing.T) {
+	server := NewServer("bad-address", http.NotFoundHandler())
+	if err := RunServer(server, "test-service", time.Second); err == nil {
+		t.Fatal("expected invalid listen address to fail")
 	}
 }

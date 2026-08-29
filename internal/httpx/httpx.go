@@ -13,8 +13,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -177,6 +179,133 @@ func NewServer(addr string, handler http.Handler) *http.Server {
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
+	}
+}
+
+// ReadinessCheck represents one dependency or initialization check required
+// before a service can safely receive traffic.
+type ReadinessCheck struct {
+	Name  string
+	Check func(context.Context) error
+}
+
+// DBReadinessCheck creates a readiness check backed by database/sql PingContext.
+// Database reachability belongs in readiness, not liveness, so a temporary DB
+// outage removes the pod from Service endpoints without causing restart loops.
+func DBReadinessCheck(name string, db interface {
+	PingContext(context.Context) error
+}) ReadinessCheck {
+	return ReadinessCheck{
+		Name: name,
+		Check: func(ctx context.Context) error {
+			if db == nil {
+				return errors.New("database handle is nil")
+			}
+			return db.PingContext(ctx)
+		},
+	}
+}
+
+// LivenessHandler reports only process health. It intentionally does not check
+// databases or downstream services because external failures must not trigger
+// Kubernetes restart loops.
+func LivenessHandler(service string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		JSON(w, http.StatusOK, map[string]string{
+			"status":  "alive",
+			"service": service,
+		})
+	}
+}
+
+// ReadinessHandler reports whether the service is currently safe to receive
+// traffic. Dependency checks are bounded by timeout and failures return 503.
+func ReadinessHandler(service string, timeout time.Duration, checks ...ReadinessCheck) http.HandlerFunc {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+
+		for _, check := range checks {
+			if check.Check == nil {
+				continue
+			}
+			if err := check.Check(ctx); err != nil {
+				name := strings.TrimSpace(check.Name)
+				if name == "" {
+					name = "unnamed"
+				}
+				log.Printf("event=readiness_failed service=%q check=%q error=%q", service, name, err)
+				JSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status":  "not_ready",
+					"service": service,
+				})
+				return
+			}
+		}
+
+		JSON(w, http.StatusOK, map[string]string{
+			"status":  "ready",
+			"service": service,
+		})
+	}
+}
+
+// RunServer starts an HTTP server and handles SIGINT/SIGTERM with a bounded
+// graceful shutdown. Kubernetes sends SIGTERM during normal rollouts and pod
+// termination, so in-flight requests get a chance to complete cleanly.
+func RunServer(server *http.Server, service string, shutdownTimeout time.Duration) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return ServeServer(ctx, server, service, shutdownTimeout)
+}
+
+// ServeServer is the context-driven form of RunServer and is kept separate so
+// graceful shutdown behaviour can be exercised in tests without OS signals.
+func ServeServer(ctx context.Context, server *http.Server, service string, shutdownTimeout time.Duration) error {
+	if server == nil {
+		return errors.New("http server is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 20 * time.Second
+	}
+
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", service, err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		log.Printf("event=shutdown_started service=%q timeout_ms=%d", service, shutdownTimeout.Milliseconds())
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("graceful shutdown %s: %w", service, err)
+		}
+
+		err := <-errCh
+		log.Printf("event=shutdown_completed service=%q", service)
+		return err
 	}
 }
 
