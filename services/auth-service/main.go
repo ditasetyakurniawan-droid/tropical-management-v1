@@ -377,14 +377,22 @@ func validRole(role string) bool {
 // ke handler-nya sendiri supaya function ini tetap sederhana (cognitive complexity rendah).
 func (a *app) users(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.parseClaims(r)
-	if err != nil || claims["role"] != roleAdmin {
+	if err != nil {
+		httpx.WriteError(w, http.StatusForbidden, errAdminRoleRequired)
+		return
+	}
+	role, _ := claims["role"].(string)
+
+	if r.Method == http.MethodGet && (role == roleAdmin || role == roleAuditor) {
+		a.usersList(w, r)
+		return
+	}
+	if role != roleAdmin {
 		httpx.WriteError(w, http.StatusForbidden, errAdminRoleRequired)
 		return
 	}
 
 	switch r.Method {
-	case http.MethodGet:
-		a.usersList(w, r)
 	case http.MethodPost:
 		a.usersCreate(w, r)
 	case http.MethodPatch:

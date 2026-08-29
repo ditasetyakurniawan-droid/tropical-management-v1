@@ -20,6 +20,9 @@ export default defineConfig({
         "components/LiveChatProvider.jsx",
         "components/SessionGate.jsx",
         "app/login/page.jsx",
+        "app/page.jsx",
+        "app/workforce/page.jsxx",
+        "app/inventory/page.jsx",
       ],
 
       // Legitimate exclusions only:

@@ -603,3 +603,29 @@ func TestLoginRateLimitRejectsBeforeDatabaseAccess(t *testing.T) {
 		t.Fatal("Retry-After header is required")
 	}
 }
+
+func TestAuditorCanReadUserDirectoryButCannotMutateAccounts(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	db, script := openTestDB(t,
+		queryStep("SELECT id,name,email,role,active FROM users", []string{"id", "name", "email", "role", "active"},
+			row(int64(3), "Ayu Service", "ayu@example.com", roleStaff, true)),
+	)
+	a := &app{db: db, secret: secret, queryTimeout: time.Second}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAuditor)))
+	w := httptest.NewRecorder()
+	a.users(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"Ayu Service"`) {
+		t.Fatalf("auditor list status=%d body=%q", w.Code, w.Body.String())
+	}
+	script.assertDone(t)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"name":"Injected","email":"x@example.com","password":"LongPassword12!","role":"staff"}`))
+	req.Header.Set("Authorization", "Bearer "+authToken(t, secret, authClaims(roleAuditor)))
+	w = httptest.NewRecorder()
+	a.users(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("auditor mutation status=%d body=%q", w.Code, w.Body.String())
+	}
+}

@@ -4,8 +4,11 @@
 
 ```text
 P0.1 Runtime reliability       COMPLETE
-P0.2 DB migration separation  COMPLETE on Kubernetes / E2E validated
-P0.2.1 Local Compose parity    OPEN
+P0.2 DB migration separation  COMPLETE / E2E validated
+P0.2.1 Local Compose parity    COMPLETE
+P0.3 Resource guardrails       COMPLETE for Tropical workloads
+P0.3.1 Traffic protection      COMPLETE
+Release 1.1 Workforce Ops      ACTIVE PRODUCT MILESTONE
 ```
 
 ## Service ownership
@@ -16,6 +19,7 @@ audit-service       -> tropical_audit
 inventory-service   -> tropical_inventory
 sales-service       -> tropical_sales
 chat-service        -> tropical_chat
+workforce-service   -> tropical_workforce
 dashboard-service   -> no owned DB
 api-gateway         -> no owned DB
 ```
@@ -95,9 +99,11 @@ Kubernetes secrets come from Vault. Do not commit passwords, tokens, private key
 
 Migration Job credentials are injected as files. Runtime and migration DB credentials are still a hardening target for separation/least privilege.
 
-## Local development warning
+## Local development
 
-Fresh Docker Compose bootstrap is not yet fully aligned with P0.2. Do not reintroduce service-startup DDL to fix it. Add a one-shot Compose migrator and point local chat at `tropical_chat` as P0.2.1.
+Fresh Compose bootstrap uses the standalone one-shot `db-migrator`. Runtime services must continue to wait for successful migration. Do not reintroduce service-startup DDL.
+
+`workforce-service` owns `tropical_workforce` and is part of the same local migration lifecycle.
 
 ## Live Chat
 
@@ -113,9 +119,9 @@ Normal post-merge deployment must be automated. Avoid manual Argo CD sync/restar
 
 ## Next priorities
 
-1. P0.2.1 fresh Compose migrator parity.
-2. P0.3 workload requests/limits + replica/PDB strategy.
-3. P0.4 runtime/migrator DB-user split + securityContext + NetworkPolicy.
-4. P1 centralized logs/metrics/traces + alerting.
-5. P1 DB resilience and ingress/TLS maturity.
+1. Validate Release 1.1 Workforce & Shift Operations with real restaurant workflows.
+2. Resume final P0 security sprint before the triggers documented in `production-readiness-roadmap.md`.
+3. Product P1: recipe/HPP, purchasing, receiving, waste and stock variance.
+4. Product P1: manager logbook, training/SOP acknowledgement and shift handover.
+5. Platform P1: metrics/alerts, backup/restore drill and evidence-based availability strategy.
 6. Redis/NATS before multi-replica chat.

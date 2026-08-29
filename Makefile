@@ -1,8 +1,8 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
-SERVICES := auth-service audit-service inventory-service sales-service chat-service dashboard-service api-gateway
+SERVICES := auth-service audit-service inventory-service sales-service chat-service workforce-service dashboard-service api-gateway
 
-.PHONY: test coverage fmt fmt-check vet verify web-install web-build compose-up compose-down
+.PHONY: test coverage fmt fmt-check vet verify web-install web-test web-build compose-up compose-down
 
 test:
 	go test -race ./...
@@ -24,10 +24,13 @@ vet:
 web-install:
 	cd web && npm ci
 
+web-test: web-install
+	cd web && npm run test:coverage
+
 web-build: web-install
 	cd web && npm run build
 
-verify: fmt-check coverage vet web-build
+verify: fmt-check coverage vet web-test web-build
 
 compose-up:
 	docker compose up --build

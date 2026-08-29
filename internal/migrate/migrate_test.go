@@ -13,6 +13,7 @@ func TestLoadAllServices(t *testing.T) {
 		"inventory": 3,
 		"sales":     1,
 		"chat":      1,
+		"workforce": 4,
 	}
 	for service, count := range expected {
 		migrations, err := Load(service)
@@ -44,7 +45,7 @@ func TestLoadRejectsInvalidService(t *testing.T) {
 }
 
 func TestBaselineMigrationsUseIdempotentCreate(t *testing.T) {
-	for _, service := range []string{"auth", "audit", "inventory", "sales", "chat"} {
+	for _, service := range []string{"auth", "audit", "inventory", "sales", "chat", "workforce"} {
 		migrations, err := Load(service)
 		if err != nil {
 			t.Fatal(err)

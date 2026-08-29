@@ -51,7 +51,7 @@ Safety behavior:
 - a dirty version fails closed;
 - a per-service MySQL advisory lock prevents concurrent migration execution;
 - schema verification runs after migrations;
-- all five targets must complete before the migrator exits 0.
+- all owned targets must complete before the migrator exits 0.
 
 ## Authoring a migration
 

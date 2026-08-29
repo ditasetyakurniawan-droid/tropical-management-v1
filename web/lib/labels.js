@@ -1,7 +1,7 @@
 const roleLabels = {
-  admin: "Admin",
-  auditor: "Auditor",
-  staff: "Staf",
+  admin: "Owner",
+  auditor: "PIC",
+  staff: "Karyawan",
 };
 
 const statusLabels = {
@@ -10,6 +10,13 @@ const statusLabels = {
   resolved: "Diselesaikan",
   verified: "Terverifikasi",
   closed: "Ditutup",
+  scheduled: "Terjadwal",
+  present: "Sedang Bertugas",
+  completed: "Selesai",
+  pending: "Menunggu",
+  approved: "Disetujui",
+  rejected: "Ditolak",
+  done: "Selesai",
 };
 
 const severityLabels = {
@@ -43,4 +50,37 @@ export function severityLabel(value) {
 
 export function channelLabel(value) {
   return channelLabels[value] || value || "-";
+}
+
+const stationLabels = {
+  kitchen: "Kitchen",
+  prep: "Preparation",
+  service: "Service",
+  cashier: "Kasir",
+  beverage: "Beverage",
+  steward: "Steward",
+};
+
+const timeOffTypeLabels = {
+  leave: "Cuti",
+  sick: "Sakit",
+  permission: "Izin",
+};
+
+const priorityLabels = {
+  low: "Rendah",
+  normal: "Normal",
+  high: "Tinggi",
+};
+
+export function stationLabel(value) {
+  return stationLabels[value] || value || "-";
+}
+
+export function timeOffTypeLabel(value) {
+  return timeOffTypeLabels[value] || value || "-";
+}
+
+export function priorityLabel(value) {
+  return priorityLabels[value] || value || "-";
 }

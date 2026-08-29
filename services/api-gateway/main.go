@@ -52,6 +52,7 @@ func main() {
 		{"/api/sales", proxy(httpx.Env("SALES_SERVICE_URL", "http://sales-service:8080"))},
 		{"/api/dashboard", proxy(httpx.Env("DASHBOARD_SERVICE_URL", "http://dashboard-service:8080"))},
 		{"/api/chat", proxy(httpx.Env("CHAT_SERVICE_URL", "http://chat-service:8080"))},
+		{"/api/workforce", proxy(httpx.Env("WORKFORCE_SERVICE_URL", "http://workforce-service:8080"))},
 	}
 	mux := http.NewServeMux()
 	httpx.RegisterHealthRoutes(mux, serviceName)
@@ -157,17 +158,29 @@ func allowed(role, method, path string) bool {
 	if pathMatchesPrefix(path, "/api/chat") && (method == http.MethodGet || method == http.MethodPost) {
 		return true
 	}
+	if pathMatchesPrefix(path, "/api/workforce") {
+		return true // workforce-service applies identity-aware authorization per endpoint.
+	}
 	if role == "admin" {
 		return true
 	}
-	if method == http.MethodGet {
-		return true
+	if role == "auditor" {
+		if method == http.MethodGet {
+			return !pathMatchesPrefix(path, "/api/users") || path == "/api/users"
+		}
+		if pathMatchesPrefix(path, "/api/audits") || pathMatchesPrefix(path, "/api/issues") {
+			return true
+		}
+		if pathMatchesPrefix(path, "/api/sales") && method == http.MethodPost {
+			return true
+		}
+		return path == "/api/inventory/adjust" && method == http.MethodPost
 	}
-	if role == "auditor" && (pathMatchesPrefix(path, "/api/audits") || pathMatchesPrefix(path, "/api/issues")) {
-		return true
-	}
-	if role == "staff" && pathMatchesPrefix(path, "/api/sales") {
-		return true
+	if role == "staff" {
+		if pathMatchesPrefix(path, "/api/sales") {
+			return method == http.MethodGet || method == http.MethodPost
+		}
+		return pathMatchesPrefix(path, "/api/auth") && method == http.MethodGet
 	}
 	return false
 }
