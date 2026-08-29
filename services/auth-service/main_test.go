@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -284,7 +285,7 @@ func TestAuthDatabaseErrorsAndCredentialFailures(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	a.usersList(w)
+	a.usersList(w, httptest.NewRequest(http.MethodGet, "/api/users", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("users list db error status=%d body=%q", w.Code, w.Body.String())
 	}
@@ -371,7 +372,7 @@ func TestApplyUserUpdatePasswordAndDatabaseErrors(t *testing.T) {
 		db, script := openTestDB(t, execStep("password_hash", 0, 1))
 		a := &app{db: db}
 		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleStaff, Active: true, Password: "LongPassword12!"}
-		if err := a.applyUserUpdate(input); err != nil {
+		if err := a.applyUserUpdate(context.Background(), input); err != nil {
 			t.Fatalf("apply update with password: %v", err)
 		}
 		script.assertDone(t)
@@ -382,7 +383,7 @@ func TestApplyUserUpdatePasswordAndDatabaseErrors(t *testing.T) {
 		db, script := openTestDB(t, execErrorStep("active=? WHERE id=?", boom))
 		a := &app{db: db}
 		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleStaff, Active: true}
-		if err := a.applyUserUpdate(input); !errors.Is(err, boom) {
+		if err := a.applyUserUpdate(context.Background(), input); !errors.Is(err, boom) {
 			t.Fatalf("expected database error, got %v", err)
 		}
 		script.assertDone(t)
@@ -393,7 +394,7 @@ func TestApplyUserUpdatePasswordAndDatabaseErrors(t *testing.T) {
 		db, script := openTestDB(t, execErrorStep("password_hash", boom))
 		a := &app{db: db}
 		input := usersUpdateInput{ID: 9, Name: "Alice", Role: roleAuditor, Active: true, Password: "LongPassword12!"}
-		if err := a.applyUserUpdate(input); !errors.Is(err, boom) {
+		if err := a.applyUserUpdate(context.Background(), input); !errors.Is(err, boom) {
 			t.Fatalf("expected database error, got %v", err)
 		}
 		script.assertDone(t)

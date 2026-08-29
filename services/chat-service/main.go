@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,13 +14,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 )
 
 const (
-	defaultDSN  = "tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4"
+	defaultDSN  = "tropical:tropical@tcp(mysql:3306)/tropical_chat?parseTime=true&charset=utf8mb4"
 	serviceName = "chat-service"
 	listenAddr  = ":8080"
 
@@ -106,8 +108,9 @@ func (b *broker) publish(message chatMessage) {
 }
 
 type app struct {
-	db     *sql.DB
-	broker *broker
+	db           *sql.DB
+	broker       *broker
+	queryTimeout time.Duration
 }
 
 func main() {
@@ -118,13 +121,14 @@ func main() {
 		defer closeLog()
 	}
 
-	db, err := dbx.Open(httpx.Env("CHAT_DB_DSN", defaultDSN))
+	dbConfig := dbx.RuntimeConfig()
+	db, err := dbx.OpenWithConfig(configx.Sensitive("CHAT_DB_DSN", defaultDSN), dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	a := &app{db: db, broker: newBroker()}
+	a := &app{db: db, broker: newBroker(), queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -149,7 +153,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (a *app) migrate() error {
-	_, err := a.db.Exec(createChatMessagesTable)
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, createChatMessagesTable)
 	return err
 }
 
@@ -207,7 +213,9 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 func (a *app) getMessages(w http.ResponseWriter, r *http.Request) {
 	limit := parseMessageLimit(r.URL.Query().Get("limit"))
 
-	rows, err := a.db.Query(selectMessagesQuery, limit)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectMessagesQuery, limit)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -271,7 +279,7 @@ func (a *app) postMessage(w http.ResponseWriter, r *http.Request, userID, userNa
 		return
 	}
 
-	msg, err := a.persistMessage(userID, userName, role, body)
+	msg, err := a.persistMessage(r.Context(), userID, userName, role, body)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -281,8 +289,10 @@ func (a *app) postMessage(w http.ResponseWriter, r *http.Request, userID, userNa
 	httpx.JSON(w, http.StatusCreated, msg)
 }
 
-func (a *app) persistMessage(userID, userName, role, body string) (chatMessage, error) {
-	res, err := a.db.Exec(insertMessageQuery, userID, userName, role, body)
+func (a *app) persistMessage(parent context.Context, userID, userName, role, body string) (chatMessage, error) {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertMessageQuery, userID, userName, role, body)
 	if err != nil {
 		return chatMessage{}, err
 	}

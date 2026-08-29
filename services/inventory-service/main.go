@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
@@ -99,7 +101,10 @@ var (
 	errStockNegativeSentinel = errors.New(errStockNegative)
 )
 
-type app struct{ db *sql.DB }
+type app struct {
+	db           *sql.DB
+	queryTimeout time.Duration
+}
 
 type item struct {
 	ID           int64     `json:"id"`
@@ -136,13 +141,14 @@ func main() {
 		defer closeLog()
 	}
 
-	db, err := dbx.Open(httpx.Env("INVENTORY_DB_DSN", defaultDSN))
+	dbConfig := dbx.RuntimeConfig()
+	db, err := dbx.OpenWithConfig(configx.Sensitive("INVENTORY_DB_DSN", defaultDSN), dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	a := &app{db: db}
+	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -170,13 +176,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (a *app) migrate() error {
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
 	queries := []string{
 		createSuppliersTable,
 		createInventoryItemsTable,
 		createStockMovementsTable,
 	}
 	for _, q := range queries {
-		if _, err := a.db.Exec(q); err != nil {
+		if _, err := a.db.ExecContext(ctx, q); err != nil {
 			return err
 		}
 	}
@@ -190,7 +198,7 @@ func (a *app) migrate() error {
 func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.getItems(w)
+		a.getItems(w, r)
 	case http.MethodPost:
 		a.createItem(w, r)
 	default:
@@ -198,8 +206,10 @@ func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) getItems(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectItemsQuery)
+func (a *app) getItems(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectItemsQuery)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -245,7 +255,7 @@ func (a *app) createItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := a.insertItemWithMovement(x)
+	id, err := a.insertItemWithMovement(r.Context(), x)
 	if err != nil {
 		if errors.Is(err, errSKUExistsSentinel) {
 			writeError(w, http.StatusConflict, errSKUExists)
@@ -270,14 +280,16 @@ func validateItem(x item) string {
 	return ""
 }
 
-func (a *app) insertItemWithMovement(x item) (int64, error) {
-	tx, err := a.db.Begin()
+func (a *app) insertItemWithMovement(parent context.Context, x item) (int64, error) {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(insertItemQuery, x.SKU, x.Name, x.Unit, x.Stock, x.ReorderLevel, x.SupplierID)
+	res, err := tx.ExecContext(ctx, insertItemQuery, x.SKU, x.Name, x.Unit, x.Stock, x.ReorderLevel, x.SupplierID)
 	if err != nil {
 		if dbx.IsDuplicateKey(err) {
 			return 0, errSKUExistsSentinel
@@ -291,7 +303,7 @@ func (a *app) insertItemWithMovement(x item) (int64, error) {
 	}
 
 	if x.Stock > 0 {
-		if _, err := tx.Exec(insertMovementQuery, id, x.Stock, initialStockReason); err != nil {
+		if _, err := tx.ExecContext(ctx, insertMovementQuery, id, x.Stock, initialStockReason); err != nil {
 			return 0, err
 		}
 	}
@@ -322,7 +334,7 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.executeAdjustment(in.ItemID, in.Delta, in.Reason)
+	result, err := a.executeAdjustment(r.Context(), in.ItemID, in.Delta, in.Reason)
 	if err != nil {
 		switch {
 		case errors.Is(err, errItemNotFoundSentinel):
@@ -338,15 +350,17 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, result)
 }
 
-func (a *app) executeAdjustment(itemID int64, delta float64, reason string) (map[string]any, error) {
-	tx, err := a.db.Begin()
+func (a *app) executeAdjustment(parent context.Context, itemID int64, delta float64, reason string) (map[string]any, error) {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
 	var current float64
-	if err := tx.QueryRow(selectStockForUpdateQuery, itemID).Scan(&current); err != nil {
+	if err := tx.QueryRowContext(ctx, selectStockForUpdateQuery, itemID).Scan(&current); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errItemNotFoundSentinel
 		}
@@ -358,12 +372,12 @@ func (a *app) executeAdjustment(itemID int64, delta float64, reason string) (map
 		return nil, errStockNegativeSentinel
 	}
 
-	if _, err := tx.Exec(updateStockQuery, newStock, itemID); err != nil {
+	if _, err := tx.ExecContext(ctx, updateStockQuery, newStock, itemID); err != nil {
 		return nil, err
 	}
 
 	reason = strings.TrimSpace(reason)
-	if _, err := tx.Exec(insertMovementQuery, itemID, delta, reason); err != nil {
+	if _, err := tx.ExecContext(ctx, insertMovementQuery, itemID, delta, reason); err != nil {
 		return nil, err
 	}
 
@@ -389,7 +403,7 @@ func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := a.getMovements()
+	out, err := a.getMovements(r.Context())
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -397,8 +411,10 @@ func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, out)
 }
 
-func (a *app) getMovements() ([]movement, error) {
-	rows, err := a.db.Query(selectMovementsQuery, defaultMovementLimit)
+func (a *app) getMovements(parent context.Context) ([]movement, error) {
+	ctx, cancel := dbx.WithQueryTimeout(parent, a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectMovementsQuery, defaultMovementLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +441,7 @@ func (a *app) getMovements() ([]movement, error) {
 func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.getSuppliers(w)
+		a.getSuppliers(w, r)
 	case http.MethodPost:
 		a.createSupplier(w, r)
 	default:
@@ -433,8 +449,10 @@ func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) getSuppliers(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectSuppliersQuery)
+func (a *app) getSuppliers(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectSuppliersQuery)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -480,7 +498,9 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.db.Exec(insertSupplierQuery, x.Name, x.Contact, x.Phone)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertSupplierQuery, x.Name, x.Contact, x.Phone)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -505,19 +525,21 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
-	alerts, err := a.countAlerts()
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	alerts, err := a.countAlerts(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
 
-	total, err := a.countTotalItems()
+	total, err := a.countTotalItems(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
 
-	stockValue, err := a.sumStock()
+	stockValue, err := a.sumStock(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -530,20 +552,20 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *app) countAlerts() (int, error) {
+func (a *app) countAlerts(ctx context.Context) (int, error) {
 	var n int
-	err := a.db.QueryRow(summaryAlertsQuery).Scan(&n)
+	err := a.db.QueryRowContext(ctx, summaryAlertsQuery).Scan(&n)
 	return n, err
 }
 
-func (a *app) countTotalItems() (int, error) {
+func (a *app) countTotalItems(ctx context.Context) (int, error) {
 	var n int
-	err := a.db.QueryRow(summaryTotalQuery).Scan(&n)
+	err := a.db.QueryRowContext(ctx, summaryTotalQuery).Scan(&n)
 	return n, err
 }
 
-func (a *app) sumStock() (float64, error) {
+func (a *app) sumStock(ctx context.Context) (float64, error) {
 	var v float64
-	err := a.db.QueryRow(summaryStockQuery).Scan(&v)
+	err := a.db.QueryRowContext(ctx, summaryStockQuery).Scan(&v)
 	return v, err
 }

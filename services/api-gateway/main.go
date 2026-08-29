@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
 	"github.com/golang-jwt/jwt/v5"
@@ -35,7 +36,7 @@ func main() {
 		defer closeLog()
 	}
 
-	g := &gateway{secret: []byte(httpx.Secret("JWT_SECRET", "local-dev-secret-change-this-value", 32))}
+	g := &gateway{secret: []byte(configx.SensitiveSecret("JWT_SECRET", "local-dev-secret-change-this-value", 32))}
 	g.routes = []route{
 		{"/api/auth", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},
 		{"/api/users", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},

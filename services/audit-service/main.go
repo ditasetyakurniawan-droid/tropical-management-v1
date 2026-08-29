@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
@@ -93,7 +95,10 @@ const (
 		WHERE id=?`
 )
 
-type app struct{ db *sql.DB }
+type app struct {
+	db           *sql.DB
+	queryTimeout time.Duration
+}
 
 type audit struct {
 	ID          int64     `json:"id"`
@@ -128,13 +133,14 @@ func main() {
 		defer closeLog()
 	}
 
-	db, err := dbx.Open(httpx.Env("AUDIT_DB_DSN", defaultDSN))
+	dbConfig := dbx.RuntimeConfig()
+	db, err := dbx.OpenWithConfig(configx.Sensitive("AUDIT_DB_DSN", defaultDSN), dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	a := &app{db: db}
+	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -160,9 +166,11 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (a *app) migrate() error {
+	ctx, cancel := dbx.WithQueryTimeout(context.Background(), a.queryTimeout)
+	defer cancel()
 	queries := []string{createAuditsTable, createIssuesTable}
 	for _, q := range queries {
-		if _, err := a.db.Exec(q); err != nil {
+		if _, err := a.db.ExecContext(ctx, q); err != nil {
 			return err
 		}
 	}
@@ -176,7 +184,7 @@ func (a *app) migrate() error {
 		`ALTER TABLE issues ADD INDEX idx_issue_due_date(due_date)`,
 	}
 	for _, q := range alterQueries {
-		if _, err := a.db.Exec(q); err != nil {
+		if _, err := a.db.ExecContext(ctx, q); err != nil {
 			log.Printf("migrate warning: %v", err)
 		}
 	}
@@ -217,7 +225,7 @@ func validOptionalDate(value string) bool {
 func (a *app) audits(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.getAudits(w)
+		a.getAudits(w, r)
 	case http.MethodPost:
 		a.createAudit(w, r)
 	default:
@@ -225,8 +233,10 @@ func (a *app) audits(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) getAudits(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectAuditsQuery)
+func (a *app) getAudits(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectAuditsQuery)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -267,7 +277,9 @@ func (a *app) createAudit(w http.ResponseWriter, r *http.Request) {
 
 	x.Score = float64(x.Cleanliness+x.SOP+x.FoodQuality) / 3
 
-	res, err := a.db.Exec(insertAuditQuery, x.Restaurant, x.Auditor, x.Cleanliness, x.SOP, x.FoodQuality, x.Score, x.Notes)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertAuditQuery, x.Restaurant, x.Auditor, x.Cleanliness, x.SOP, x.FoodQuality, x.Score, x.Notes)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -301,7 +313,7 @@ func validateAudit(x audit) string {
 func (a *app) issues(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.getIssues(w)
+		a.getIssues(w, r)
 	case http.MethodPost:
 		a.createIssue(w, r)
 	case http.MethodPatch:
@@ -311,8 +323,10 @@ func (a *app) issues(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) getIssues(w http.ResponseWriter) {
-	rows, err := a.db.Query(selectIssuesQuery)
+func (a *app) getIssues(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, selectIssuesQuery)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -353,7 +367,9 @@ func (a *app) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.db.Exec(insertIssueQuery, x.AuditID, x.Title, x.Severity, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	res, err := a.db.ExecContext(ctx, insertIssueQuery, x.AuditID, x.Title, x.Severity, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -410,7 +426,9 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := a.db.Exec(updateIssueQuery, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction, x.ID)
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, updateIssueQuery, x.Status, x.AssignedTo, x.DueDate, x.CorrectiveAction, x.ID)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -434,25 +452,27 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
-	score, err := a.avgScore30Days()
+	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)
+	defer cancel()
+	score, err := a.avgScore30Days(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
 
-	open, err := a.countOpenIssues()
+	open, err := a.countOpenIssues(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
 
-	overdue, err := a.countOverdueIssues()
+	overdue, err := a.countOverdueIssues(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
 	}
 
-	critical, err := a.countCriticalIssues()
+	critical, err := a.countCriticalIssues(ctx)
 	if err != nil {
 		httpx.InternalError(w, err)
 		return
@@ -466,9 +486,9 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *app) avgScore30Days() (float64, error) {
+func (a *app) avgScore30Days(ctx context.Context) (float64, error) {
 	var score float64
-	err := a.db.QueryRow(`
+	err := a.db.QueryRowContext(ctx, `
 		SELECT COALESCE(AVG(score),0) 
 		FROM audits 
 		WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -476,24 +496,24 @@ func (a *app) avgScore30Days() (float64, error) {
 	return score, err
 }
 
-func (a *app) countOpenIssues() (int, error) {
+func (a *app) countOpenIssues(ctx context.Context) (int, error) {
 	var count int
-	err := a.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE status <> 'closed'`).Scan(&count)
+	err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM issues WHERE status <> 'closed'`).Scan(&count)
 	return count, err
 }
 
-func (a *app) countOverdueIssues() (int, error) {
+func (a *app) countOverdueIssues(ctx context.Context) (int, error) {
 	var count int
-	err := a.db.QueryRow(`
+	err := a.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM issues 
 		WHERE due_date < CURDATE() AND status NOT IN ('closed','verified')
 	`).Scan(&count)
 	return count, err
 }
 
-func (a *app) countCriticalIssues() (int, error) {
+func (a *app) countCriticalIssues(ctx context.Context) (int, error) {
 	var count int
-	err := a.db.QueryRow(`
+	err := a.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM issues 
 		WHERE severity = 'critical' AND status <> 'closed'
 	`).Scan(&count)

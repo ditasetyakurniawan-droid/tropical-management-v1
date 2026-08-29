@@ -118,7 +118,7 @@ func TestSalesDatabaseErrorsAreHandled(t *testing.T) {
 	a := &app{db: db}
 
 	w := httptest.NewRecorder()
-	a.getSales(w)
+	a.getSales(w, httptest.NewRequest(http.MethodGet, "/api/sales", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("get error status=%d body=%q", w.Code, w.Body.String())
 	}
