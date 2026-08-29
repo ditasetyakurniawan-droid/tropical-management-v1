@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS audits (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    restaurant VARCHAR(150) NOT NULL,
+    auditor VARCHAR(150) NOT NULL,
+    cleanliness INT NOT NULL,
+    sop INT NOT NULL,
+    food_quality INT NOT NULL,
+    score DECIMAL(5,2) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
