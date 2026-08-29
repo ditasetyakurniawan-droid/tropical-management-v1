@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +38,16 @@ func JSON(w http.ResponseWriter, status int, payload any) {
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		log.Printf("event=json_encode_error error=%q", err)
 	}
+}
+
+// SetRetryAfter emits an RFC-compatible Retry-After delay in whole seconds.
+// Sub-second values are rounded up so clients never receive a zero-second retry.
+func SetRetryAfter(w http.ResponseWriter, delay time.Duration) {
+	if delay <= 0 {
+		delay = time.Second
+	}
+	seconds := int64((delay + time.Second - 1) / time.Second)
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 }
 
 // InternalError logs the implementation detail server-side and returns a stable,

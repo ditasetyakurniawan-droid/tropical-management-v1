@@ -425,3 +425,11 @@ func TestRunServerReturnsListenError(t *testing.T) {
 		t.Fatal("expected invalid listen address to fail")
 	}
 }
+
+func TestSetRetryAfter(t *testing.T) {
+	w := httptest.NewRecorder()
+	SetRetryAfter(w, 1500*time.Millisecond)
+	if got := w.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After=%q want 2", got)
+	}
+}

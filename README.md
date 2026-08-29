@@ -117,6 +117,7 @@ Start here:
 - [`docs/coverage-policy.md`](docs/coverage-policy.md): quality-gate policy.
 - [`docs/engineering-review.md`](docs/engineering-review.md): engineering review and residual risks.
 - [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md): prioritized hardening roadmap.
+- [`docs/p0-traffic-protection.md`](docs/p0-traffic-protection.md): API concurrency, login rate limits, and SSE connection caps.
 
 ## Quality gates
 

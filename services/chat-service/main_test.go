@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 )
 
 func TestHealthzHandler(t *testing.T) {
@@ -319,4 +321,26 @@ func TestRunStreamLoopMessageAndHeartbeat(t *testing.T) {
 			t.Fatalf("unexpected heartbeat body %q", body)
 		}
 	})
+}
+
+func TestHandleStreamRejectsWhenConnectionLimitIsReached(t *testing.T) {
+	limiter := trafficx.NewConnectionLimiter(1, 1)
+	if !limiter.TryAcquire("1") {
+		t.Fatal("failed to occupy stream slot")
+	}
+	defer limiter.Release("1")
+
+	a := &app{broker: newBroker(), streamLimiter: limiter}
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
+	req.Header.Set("X-User-ID", "1")
+	req.Header.Set("X-User-Name", "Alice")
+	req.Header.Set("X-User-Role", roleStaff)
+	w := httptest.NewRecorder()
+	a.handleStream(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After=%q", got)
+	}
 }
