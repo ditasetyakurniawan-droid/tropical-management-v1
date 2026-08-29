@@ -204,3 +204,18 @@ Public product discovery references, accessed August 2026:
 - Mekari Talenta employee self-service and attendance documentation: https://www.talenta.co/
 - Moka POS/back-office: https://www.mokapos.com/
 - ESB restaurant technology: https://www.esb.id/
+
+
+<!-- release-1.1-current-status -->
+
+## Current Release Status
+
+Release 1.1 Workforce & Shift Operations is deployed in the internal
+`test-app` environment.
+
+**Engineering status:** deployment and smoke-test gates passed.
+
+**Current stage:** Functional Validation / UAT.
+
+For the canonical status, verification matrix, technical debt, and next
+milestone, see [`DEVELOPMENT_TRACKER.md`](DEVELOPMENT_TRACKER.md).
