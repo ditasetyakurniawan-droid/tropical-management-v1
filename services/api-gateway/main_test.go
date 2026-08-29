@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -250,4 +251,65 @@ func TestProxyPanicsForInvalidURL(t *testing.T) {
 		}
 	}()
 	_ = proxy("http://[::1")
+}
+
+func TestGatewayRejectsWhenConcurrencyLimitIsSaturated(t *testing.T) {
+	limiter := trafficx.NewConcurrencyLimiter(1)
+	if !limiter.TryAcquire() {
+		t.Fatal("failed to occupy gateway slot")
+	}
+	defer limiter.Release()
+
+	g := &gateway{inFlight: limiter}
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{}`)))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After=%q", got)
+	}
+}
+
+func TestGatewayDoesNotCountSSEAgainstNormalConcurrencyLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	limiter := trafficx.NewConcurrencyLimiter(1)
+	if !limiter.TryAcquire() {
+		t.Fatal("failed to occupy gateway slot")
+	}
+	defer limiter.Release()
+
+	secret := []byte("01234567890123456789012345678901")
+	g := &gateway{
+		secret:         secret,
+		inFlight:       limiter,
+		streamInFlight: trafficx.NewConcurrencyLimiter(1),
+		routes:         []route{{prefix: "/api/chat", proxy: proxy(upstream.URL)}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("staff")))
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestGatewayRejectsWhenSSEConcurrencyLimitIsSaturated(t *testing.T) {
+	streamLimiter := trafficx.NewConcurrencyLimiter(1)
+	if !streamLimiter.TryAcquire() {
+		t.Fatal("failed to occupy SSE gateway slot")
+	}
+	defer streamLimiter.Release()
+
+	g := &gateway{streamInFlight: streamLimiter}
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
 }

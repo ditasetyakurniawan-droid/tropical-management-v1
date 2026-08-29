@@ -18,6 +18,7 @@ import (
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 )
 
 const (
@@ -40,8 +41,10 @@ const (
 	errStreamingUnsupported = "streaming unsupported"
 
 	// Limits
-	defaultMessageLimit = 100
-	maxMessageLimit     = 200
+	defaultMessageLimit             = 100
+	maxMessageLimit                 = 200
+	defaultMaxSSEConnections        = 100
+	defaultMaxSSEConnectionsPerUser = 3
 
 	// SQL queries
 	createChatMessagesTable = `CREATE TABLE IF NOT EXISTS chat_messages (
@@ -108,9 +111,10 @@ func (b *broker) publish(message chatMessage) {
 }
 
 type app struct {
-	db           *sql.DB
-	broker       *broker
-	queryTimeout time.Duration
+	db            *sql.DB
+	broker        *broker
+	queryTimeout  time.Duration
+	streamLimiter *trafficx.ConnectionLimiter
 }
 
 func main() {
@@ -128,7 +132,15 @@ func main() {
 	}
 	defer db.Close()
 
-	a := &app{db: db, broker: newBroker(), queryTimeout: dbConfig.QueryTimeout}
+	a := &app{
+		db:           db,
+		broker:       newBroker(),
+		queryTimeout: dbConfig.QueryTimeout,
+		streamLimiter: trafficx.NewConnectionLimiter(
+			configx.Int("CHAT_MAX_SSE_CONNECTIONS", defaultMaxSSEConnections),
+			configx.Int("CHAT_MAX_SSE_CONNECTIONS_PER_USER", defaultMaxSSEConnectionsPerUser),
+		),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -322,9 +334,20 @@ func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, _, _, err := identity(r); err != nil {
+	userID, _, _, err := identity(r)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
+	}
+
+	if a.streamLimiter != nil {
+		if !a.streamLimiter.TryAcquire(userID) {
+			httpx.SetRetryAfter(w, 5*time.Second)
+			log.Printf("event=chat_stream_limited request_id=%q user_id=%q", httpx.RequestID(r.Context()), userID)
+			writeError(w, http.StatusTooManyRequests, "too many active chat streams")
+			return
+		}
+		defer a.streamLimiter.Release(userID)
 	}
 
 	flusher, ok := w.(http.Flusher)

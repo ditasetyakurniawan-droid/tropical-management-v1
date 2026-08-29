@@ -14,6 +14,7 @@ import (
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/dbx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,12 +22,16 @@ import (
 const (
 	sessionTTL = 30 * time.Minute
 
-	defaultDSN                 = "tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4"
-	defaultJWTSecret           = "local-dev-secret-change-this-value"
-	defaultBootstrapAdminEmail = "admin@tropical.local"
-	defaultBootstrapAdminPass  = "ChangeThis123!"
-	serviceName                = "auth-service"
-	listenAddr                 = ":8080"
+	defaultDSN                          = "tropical:tropical@tcp(mysql:3306)/tropical_auth?parseTime=true&charset=utf8mb4"
+	defaultJWTSecret                    = "local-dev-secret-change-this-value"
+	defaultBootstrapAdminEmail          = "admin@tropical.local"
+	defaultBootstrapAdminPass           = "ChangeThis123!"
+	defaultLoginRateLimitAttempts       = 5
+	defaultLoginGlobalRateLimitAttempts = 100
+	defaultLoginRateLimitMaxKeys        = 10000
+	defaultLoginRateLimitWindow         = time.Minute
+	serviceName                         = "auth-service"
+	listenAddr                          = ":8080"
 
 	// Role constants
 	roleAdmin   = "admin"
@@ -81,9 +86,44 @@ const (
 )
 
 type app struct {
-	db           *sql.DB
-	secret       []byte
-	queryTimeout time.Duration
+	db              *sql.DB
+	secret          []byte
+	queryTimeout    time.Duration
+	loginProtection *loginProtection
+}
+
+type loginProtection struct {
+	perAccount *trafficx.TokenBucketLimiter
+	global     *trafficx.TokenBucketLimiter
+}
+
+func newLoginProtection() *loginProtection {
+	window := configx.Duration("AUTH_LOGIN_RATE_LIMIT_WINDOW", defaultLoginRateLimitWindow)
+	return &loginProtection{
+		perAccount: trafficx.NewTokenBucketLimiter(
+			configx.Int("AUTH_LOGIN_RATE_LIMIT_ATTEMPTS", defaultLoginRateLimitAttempts),
+			window,
+			configx.Int("AUTH_LOGIN_RATE_LIMIT_MAX_KEYS", defaultLoginRateLimitMaxKeys),
+		),
+		global: trafficx.NewTokenBucketLimiter(
+			configx.Int("AUTH_LOGIN_GLOBAL_RATE_LIMIT_ATTEMPTS", defaultLoginGlobalRateLimitAttempts),
+			window,
+			1,
+		),
+	}
+}
+
+func (p *loginProtection) allow(email string, now time.Time) (bool, time.Duration) {
+	if p == nil {
+		return true, 0
+	}
+	if ok, retry := p.perAccount.Allow(email, now); !ok {
+		return false, retry
+	}
+	if ok, retry := p.global.Allow("login", now); !ok {
+		return false, retry
+	}
+	return true, 0
 }
 
 type user struct {
@@ -110,9 +150,10 @@ func main() {
 	defer db.Close()
 
 	a := &app{
-		db:           db,
-		secret:       []byte(configx.SensitiveSecret("JWT_SECRET", defaultJWTSecret, 32)),
-		queryTimeout: dbConfig.QueryTimeout,
+		db:              db,
+		secret:          []byte(configx.SensitiveSecret("JWT_SECRET", defaultJWTSecret, 32)),
+		queryTimeout:    dbConfig.QueryTimeout,
+		loginProtection: newLoginProtection(),
 	}
 	if err := a.bootstrapAdmin(); err != nil {
 		log.Fatal(err)
@@ -202,6 +243,13 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := normalizeEmail(input.Email)
+	if allowed, retry := a.loginProtection.allow(email, time.Now()); !allowed {
+		httpx.SetRetryAfter(w, retry)
+		log.Printf("event=login_rate_limited request_id=%q", httpx.RequestID(r.Context()))
+		writeError(w, http.StatusTooManyRequests, "too many login attempts")
+		return
+	}
+
 	var u user
 	var hash string
 	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)

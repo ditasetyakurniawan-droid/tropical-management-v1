@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -555,4 +556,49 @@ func TestUserMutationDatabaseErrorsAreHandled(t *testing.T) {
 		}
 		script.assertDone(t)
 	})
+}
+
+func TestLoginProtectionLimitsPerAccountAndGlobally(t *testing.T) {
+	now := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+	p := &loginProtection{
+		perAccount: trafficx.NewTokenBucketLimiter(1, time.Minute, 10),
+		global:     trafficx.NewTokenBucketLimiter(10, time.Minute, 1),
+	}
+	if ok, _ := p.allow("alice@example.com", now); !ok {
+		t.Fatal("first alice login should be allowed")
+	}
+	if ok, retry := p.allow("alice@example.com", now); ok || retry <= 0 {
+		t.Fatalf("second alice login should be limited, retry=%s", retry)
+	}
+
+	p = &loginProtection{
+		perAccount: trafficx.NewTokenBucketLimiter(10, time.Minute, 10),
+		global:     trafficx.NewTokenBucketLimiter(1, time.Minute, 1),
+	}
+	if ok, _ := p.allow("alice@example.com", now); !ok {
+		t.Fatal("first global login should be allowed")
+	}
+	if ok, retry := p.allow("bob@example.com", now); ok || retry <= 0 {
+		t.Fatalf("global limiter should reject second account, retry=%s", retry)
+	}
+}
+
+func TestLoginRateLimitRejectsBeforeDatabaseAccess(t *testing.T) {
+	protection := &loginProtection{
+		perAccount: trafficx.NewTokenBucketLimiter(1, time.Minute, 10),
+		global:     trafficx.NewTokenBucketLimiter(100, time.Minute, 1),
+	}
+	if ok, _ := protection.perAccount.Allow("alice@example.com", time.Now()); !ok {
+		t.Fatal("failed to occupy account token")
+	}
+
+	a := &app{loginProtection: protection}
+	w := httptest.NewRecorder()
+	a.login(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"alice@example.com","password":"anything"}`)))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After header is required")
+	}
 }

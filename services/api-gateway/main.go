@@ -7,21 +7,27 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/configx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/logx"
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/trafficx"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	serviceName = "api-gateway"
-	listenAddr  = ":8080"
+	serviceName                  = "api-gateway"
+	listenAddr                   = ":8080"
+	defaultGatewayMaxInFlight    = 100
+	defaultGatewayMaxSSEInFlight = 100
 )
 
 type gateway struct {
-	secret []byte
-	routes []route
+	secret         []byte
+	routes         []route
+	inFlight       *trafficx.ConcurrencyLimiter
+	streamInFlight *trafficx.ConcurrencyLimiter
 }
 type route struct {
 	prefix string
@@ -36,7 +42,11 @@ func main() {
 		defer closeLog()
 	}
 
-	g := &gateway{secret: []byte(configx.SensitiveSecret("JWT_SECRET", "local-dev-secret-change-this-value", 32))}
+	g := &gateway{
+		secret:         []byte(configx.SensitiveSecret("JWT_SECRET", "local-dev-secret-change-this-value", 32)),
+		inFlight:       trafficx.NewConcurrencyLimiter(configx.Int("GATEWAY_MAX_IN_FLIGHT", defaultGatewayMaxInFlight)),
+		streamInFlight: trafficx.NewConcurrencyLimiter(configx.Int("GATEWAY_MAX_SSE_IN_FLIGHT", defaultGatewayMaxSSEInFlight)),
+	}
 	g.routes = []route{
 		{"/api/auth", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},
 		{"/api/users", proxy(httpx.Env("AUTH_SERVICE_URL", "http://auth-service:8080"))},
@@ -85,6 +95,23 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	// SSE streams are long-lived, so they use a separate concurrency budget and
+	// cannot consume every normal API slot. Chat-service applies the stricter
+	// per-user stream cap after the gateway verifies identity.
+	limiter := g.inFlight
+	if r.URL.Path == "/api/chat/stream" {
+		limiter = g.streamInFlight
+	}
+	if limiter != nil {
+		if !limiter.TryAcquire() {
+			httpx.SetRetryAfter(w, time.Second)
+			log.Printf("event=gateway_saturated request_id=%q path=%q", httpx.RequestID(r.Context()), r.URL.Path)
+			httpx.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service temporarily busy"})
+			return
+		}
+		defer limiter.Release()
 	}
 
 	if r.URL.Path != "/api/auth/login" {
