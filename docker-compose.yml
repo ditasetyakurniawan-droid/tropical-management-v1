@@ -24,6 +24,7 @@ services:
       INVENTORY_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_inventory?parseTime=true&charset=utf8mb4
       SALES_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_sales?parseTime=true&charset=utf8mb4
       CHAT_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_chat?parseTime=true&charset=utf8mb4
+      WORKFORCE_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_workforce?parseTime=true&charset=utf8mb4
     depends_on:
       mysql:
         condition: service_healthy
@@ -94,6 +95,19 @@ services:
       - app-logs:/var/log/tropical
     expose: ["8080"]
 
+  workforce-service:
+    build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: workforce-service}}
+    environment:
+      WORKFORCE_DB_DSN: tropical:tropical@tcp(mysql:3306)/tropical_workforce?parseTime=true&charset=utf8mb4
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
+    volumes:
+      - app-logs:/var/log/tropical
+    expose: ["8080"]
+
   dashboard-service:
     build: {context: ., dockerfile: Dockerfile.backend, args: {SERVICE: dashboard-service}}
     environment:
@@ -116,7 +130,8 @@ services:
       SALES_SERVICE_URL: http://sales-service:8080
       DASHBOARD_SERVICE_URL: http://dashboard-service:8080
       CHAT_SERVICE_URL: http://chat-service:8080
-    depends_on: [auth-service, audit-service, inventory-service, sales-service, dashboard-service, chat-service]
+      WORKFORCE_SERVICE_URL: http://workforce-service:8080
+    depends_on: [auth-service, audit-service, inventory-service, sales-service, dashboard-service, chat-service, workforce-service]
     volumes:
       - app-logs:/var/log/tropical
     ports: ["8080:8080"]

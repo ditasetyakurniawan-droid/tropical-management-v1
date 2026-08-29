@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../../lib/api";
+import { api, sessionUser } from "../../lib/api";
 
 export default function Inventory() {
+  const user = sessionUser();
+  const ownerMode = user?.role === "admin";
+  const picMode = user?.role === "auditor";
   const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -49,24 +52,35 @@ export default function Inventory() {
       </div>
       {error && <div className="toast-error mt-5">{error}</div>}
 
-      <section className="mt-7 grid gap-5 xl:grid-cols-3">
-        <form onSubmit={createItem} className="card p-6">
-          <p className="section-label">Item Inventaris Baru</p><h2 className="mt-2 text-xl font-black text-emerald-950">Buat master stok</h2>
-          <div className="mt-5 space-y-3">
-            <input className="input" placeholder="SKU" value={itemForm.sku} onChange={(e) => setItemForm({ ...itemForm, sku: e.target.value })} />
-            <input className="input" placeholder="Nama item" value={itemForm.name} onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })} />
-            <div className="grid grid-cols-2 gap-3"><input className="input" placeholder="Satuan" value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} /><input className="input" type="number" min="0" placeholder="Stok awal" value={itemForm.stock} onChange={(e) => setItemForm({ ...itemForm, stock: e.target.value })} /></div>
-            <input className="input" type="number" min="0" placeholder="Batas pemesanan ulang" value={itemForm.reorder_level} onChange={(e) => setItemForm({ ...itemForm, reorder_level: e.target.value })} />
-            <select className="input" value={itemForm.supplier_id} onChange={(e) => setItemForm({ ...itemForm, supplier_id: e.target.value })}><option value="0">Tanpa pemasok</option>{suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
-            <button className="btn w-full">Buat Item</button>
-          </div>
-        </form>
+      {picMode && (
+        <section className="mt-7 rounded-[24px] border border-amber-300/50 bg-amber-50/70 px-5 py-4 text-sm text-amber-950">
+          <p className="font-black">Mode PIC · kontrol operasional</p>
+          <p className="mt-1 leading-6 text-amber-900/75">PIC dapat memantau stok dan mencatat penerimaan, pemakaian, limbah, atau koreksi. Master item dan pemasok tetap dikelola Owner agar perubahan data acuan tetap terkontrol.</p>
+        </section>
+      )}
 
-        <form onSubmit={createSupplier} className="card p-6">
-          <p className="section-label">Direktori Pemasok</p><h2 className="mt-2 text-xl font-black text-emerald-950">Daftarkan pemasok</h2>
-          <div className="mt-5 space-y-3"><input className="input" placeholder="Nama pemasok" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })} /><input className="input" placeholder="Kontak / email" value={supplierForm.contact} onChange={(e) => setSupplierForm({ ...supplierForm, contact: e.target.value })} /><input className="input" placeholder="Telepon" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} /><button className="btn btn-gold w-full">Tambah Pemasok</button></div>
-          <div className="mt-5 space-y-2">{suppliers.slice(0, 5).map((x) => <div key={x.id} className="rounded-2xl border border-emerald-950/8 bg-white/55 p-3"><p className="font-black text-emerald-950">{x.name}</p><p className="text-xs text-slate-500">{x.contact || "Belum ada kontak"} · {x.phone || "Belum ada telepon"}</p></div>)}</div>
-        </form>
+      <section className={`mt-7 grid gap-5 ${ownerMode ? "xl:grid-cols-3" : "xl:grid-cols-1"}`}>
+        {ownerMode && (
+          <form onSubmit={createItem} className="card p-6">
+            <p className="section-label">Item Inventaris Baru</p><h2 className="mt-2 text-xl font-black text-emerald-950">Buat master stok</h2>
+            <div className="mt-5 space-y-3">
+              <input className="input" placeholder="SKU" value={itemForm.sku} onChange={(e) => setItemForm({ ...itemForm, sku: e.target.value })} />
+              <input className="input" placeholder="Nama item" value={itemForm.name} onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })} />
+              <div className="grid grid-cols-2 gap-3"><input className="input" placeholder="Satuan" value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} /><input className="input" type="number" min="0" placeholder="Stok awal" value={itemForm.stock} onChange={(e) => setItemForm({ ...itemForm, stock: e.target.value })} /></div>
+              <input className="input" type="number" min="0" placeholder="Batas pemesanan ulang" value={itemForm.reorder_level} onChange={(e) => setItemForm({ ...itemForm, reorder_level: e.target.value })} />
+              <select className="input" value={itemForm.supplier_id} onChange={(e) => setItemForm({ ...itemForm, supplier_id: e.target.value })}><option value="0">Tanpa pemasok</option>{suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+              <button className="btn w-full">Buat Item</button>
+            </div>
+          </form>
+        )}
+
+        {ownerMode && (
+          <form onSubmit={createSupplier} className="card p-6">
+            <p className="section-label">Direktori Pemasok</p><h2 className="mt-2 text-xl font-black text-emerald-950">Daftarkan pemasok</h2>
+            <div className="mt-5 space-y-3"><input className="input" placeholder="Nama pemasok" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })} /><input className="input" placeholder="Kontak / email" value={supplierForm.contact} onChange={(e) => setSupplierForm({ ...supplierForm, contact: e.target.value })} /><input className="input" placeholder="Telepon" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} /><button className="btn btn-gold w-full">Tambah Pemasok</button></div>
+            <div className="mt-5 space-y-2">{suppliers.slice(0, 5).map((x) => <div key={x.id} className="rounded-2xl border border-emerald-950/8 bg-white/55 p-3"><p className="font-black text-emerald-950">{x.name}</p><p className="text-xs text-slate-500">{x.contact || "Belum ada kontak"} · {x.phone || "Belum ada telepon"}</p></div>)}</div>
+          </form>
+        )}
 
         <form onSubmit={adjustStock} className="card p-6">
           <p className="section-label">Pergerakan Stok</p><h2 className="mt-2 text-xl font-black text-emerald-950">Sesuaikan inventaris</h2>

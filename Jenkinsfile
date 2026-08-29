@@ -149,6 +149,7 @@ pipeline {
                         'inventory-service' : 'tropical-inventory',
                         'sales-service'     : 'tropical-sales',
                         'chat-service'      : 'tropical-chat',
+                        'workforce-service' : 'tropical-workforce',
                         'dashboard-service' : 'tropical-dashboard',
                         'api-gateway'       : 'tropical-api-gateway',
                         'db-migrator'       : 'tropical-db-migrator'
@@ -211,6 +212,7 @@ pipeline {
                           tropical-inventory \
                           tropical-sales \
                           tropical-chat \
+                          tropical-workforce \
                           tropical-dashboard \
                           tropical-api-gateway \
                           tropical-db-migrator \

@@ -58,6 +58,16 @@ var targets = []targetConfig{
 			`SELECT id,user_id,user_name,role,body,created_at FROM chat_messages LIMIT 0`,
 		},
 	},
+	{
+		name: "workforce",
+		env:  "WORKFORCE_DB_DSN",
+		verifySQL: []string{
+			`SELECT id,employee_id,employee_name,shift_date,start_time,end_time,station,status,notes,created_by_id,created_by_name,created_at FROM shifts LIMIT 0`,
+			`SELECT id,shift_id,employee_id,employee_name,work_date,clock_in,clock_out,status,notes,created_at FROM attendance LIMIT 0`,
+			`SELECT id,employee_id,employee_name,start_date,end_date,type,reason,status,reviewed_by_id,reviewed_by_name,review_note,created_at,updated_at FROM time_off_requests LIMIT 0`,
+			`SELECT id,shift_date,title,station,assigned_to_id,assigned_to_name,priority,status,created_by_id,created_by_name,completed_by_id,completed_by_name,completed_at,created_at FROM shift_tasks LIMIT 0`,
+		},
+	},
 }
 
 func main() {

@@ -2,7 +2,7 @@
 
 Tropical Management is a restaurant operations and internal-audit platform built as independently deployable Go microservices with a Next.js PWA frontend. This repository owns application code, tests, Docker build definitions, versioned database migrations, and the Jenkins CI pipeline.
 
-> Current engineering baseline: P0.1 runtime reliability and P0.2 delivery-owned database migrations are validated end-to-end in the `test-app` Kubernetes environment.
+> Current product milestone: **Release 1.1 Workforce & Shift Operations** for Tropical Steak House, Temanggung. Runtime reliability, delivery-owned migrations, resource guardrails and traffic protection are already established; the final security sprint remains explicitly deferred in the roadmap.
 
 ## System architecture
 
@@ -19,6 +19,7 @@ API Gateway
       +-- audit-service --------> tropical_audit
       +-- inventory-service ----> tropical_inventory
       +-- sales-service --------> tropical_sales
+      +-- workforce-service ----> tropical_workforce
       +-- dashboard-service ----> HTTP aggregation only
       +-- chat-service ---------> tropical_chat
 
@@ -36,6 +37,7 @@ The application remains a source monorepo. A service boundary is defined by runt
 | `audit-service` | Audit checklist, findings, corrective-action workflow | `tropical_audit` |
 | `inventory-service` | Items, suppliers, stock, stock movements | `tropical_inventory` |
 | `sales-service` | Daily operational sales | `tropical_sales` |
+| `workforce-service` | Shifts, attendance, time off, shift checklist | `tropical_workforce` |
 | `dashboard-service` | Cross-service HTTP aggregation | none |
 | `chat-service` | General room, MySQL history, SSE real-time delivery | `tropical_chat` |
 | `api-gateway` | API entry point, JWT validation, RBAC, reverse proxy | none |
@@ -88,7 +90,7 @@ See [`docs/architecture.md`](docs/architecture.md) and [`docs/production-readine
 Schema ownership is no longer part of normal service startup in the Kubernetes delivery path.
 
 - Migrations are versioned under `internal/migrate/sql/<target>/`.
-- `services/db-migrator` executes the five DB targets before application rollout.
+- `services/db-migrator` executes all owned DB targets, including `tropical_workforce`, before application rollout.
 - `schema_migrations` records version, migration name, SHA-256 checksum, dirty state, start time, and applied time.
 - Applied migration files are immutable. A checksum mismatch fails closed.
 - Dirty migrations fail closed.
@@ -118,6 +120,7 @@ Start here:
 - [`docs/engineering-review.md`](docs/engineering-review.md): engineering review and residual risks.
 - [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md): prioritized hardening roadmap.
 - [`docs/p0-traffic-protection.md`](docs/p0-traffic-protection.md): API concurrency, login rate limits, and SSE connection caps.
+- [`docs/product-workforce-operations.md`](docs/product-workforce-operations.md): Tropical Steak House product direction, role model, Release 1.1 scope, research references, and backlog.
 
 ## Quality gates
 
@@ -131,23 +134,20 @@ make vet
 
 ## Local development
 
-Docker Compose remains useful for developer feedback, but after P0.2 the local path must be kept aligned with the Kubernetes migration lifecycle.
-
-Known follow-up: a fresh Compose volume currently needs a one-shot `db-migrator` path, and local `CHAT_DB_DSN` must point to `tropical_chat`. Track this as P0.2.1 before treating fresh local bootstrap as equivalent to cluster bootstrap.
-
-Do not solve that by re-enabling schema migration inside runtime service startup.
+Docker Compose uses the same standalone one-shot migrator model as the cluster path. `workforce-service` is included and waits for the migrator to create/verify `tropical_workforce`. Runtime services must remain free of startup DDL.
 
 ## Live Chat scaling constraint
 
 The current SSE broker is in-memory. MySQL persists history, but live fan-out between multiple `chat-service` replicas requires Redis, NATS, or equivalent shared pub/sub. Keep chat at one replica until that is implemented.
 
-## Current engineering status
+## Current engineering/product status
 
-- P0.1 runtime health + graceful shutdown: **complete and rollout-validated**.
-- P0.2 versioned delivery-owned DB migration: **complete and E2E validated in Kubernetes**.
-- P0.2.1 local Compose migration alignment: **next cleanup**.
-- P0.3 Kubernetes resource/availability hardening: **next platform milestone**.
-- P0.4 least privilege + workload/network security: **planned**.
-- P1 observability, DB resilience, TLS/ingress maturity: **planned**.
+- P0.1 runtime health, graceful shutdown, bounded DB behavior: **complete**.
+- P0.2 versioned delivery-owned DB migration + Compose parity: **complete**.
+- P0.3 Kubernetes resource/runtime guardrails: **complete for active Tropical workloads**.
+- P0.3.1 traffic protection: **complete**.
+- Release 1.1 Workforce & Shift Operations: **active feature milestone**.
+- Final P0 security sprint (supported Go, vuln scanning, NetworkPolicy, least privilege): **deferred, explicitly tracked with mandatory resume triggers**.
+- P1 observability, DB resilience, evidence-based HA: **planned**.
 
-See [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md).
+See [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md) and [`docs/product-workforce-operations.md`](docs/product-workforce-operations.md).

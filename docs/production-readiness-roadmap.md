@@ -1,99 +1,121 @@
 # Production-readiness roadmap
 
-This is a prioritized engineering roadmap for the homelab production-like target. "Complete" means implemented and runtime-validated, not that the system has enterprise HA guarantees.
+This is the prioritized engineering roadmap for the homelab production-like target. "Complete" means implemented and runtime-validated, not enterprise HA.
 
-## P0.1 Runtime reliability - COMPLETE
+## Completed P0 baseline
 
-- `/livez` and `/readyz` contract
-- DB-backed readiness checks
-- startup/readiness/liveness probes
-- graceful SIGTERM/SIGINT
-- 20s application shutdown budget
-- 30s Kubernetes termination grace
-- controlled rollout validation
+### P0.1 Runtime reliability - COMPLETE
 
-## P0.2 Delivery-owned database migration - COMPLETE on Kubernetes
+- `/livez` and `/readyz` contract;
+- DB-backed readiness checks;
+- startup/readiness/liveness probes;
+- graceful SIGTERM/SIGINT;
+- bounded application shutdown;
+- request-scoped DB contexts and DB/network timeouts;
+- bounded DB connection pools;
+- fail-closed sensitive configuration in production-like environments.
 
-- standalone `db-migrator`
-- versioned SQL by service target
-- `schema_migrations`
-- checksum enforcement
-- dirty-state protection
-- MySQL advisory locking
-- schema verification
-- Jenkins migrator image
-- Vault-injected migration credentials
-- Argo CD PreSync execution
-- fail-closed migration behavior validated
-- `tropical_chat` ownership corrected
-- runtime startup migration calls disabled
-- automatic Jenkins -> Harbor -> GitOps -> Argo CD -> PreSync -> rollout E2E validated
+### P0.2 Delivery-owned database migration - COMPLETE
 
-## P0.2.1 Local Compose parity - NEXT
+- standalone `db-migrator`;
+- versioned SQL by service target;
+- `schema_migrations`, checksum and dirty-state protection;
+- MySQL advisory locking and schema verification;
+- Vault-injected migration credentials;
+- Argo CD PreSync execution;
+- Jenkins -> Harbor -> GitOps -> Argo CD delivery validated.
 
-Acceptance criteria:
+### P0.2.1 Local Compose migration parity - COMPLETE
 
-- fresh `docker compose` volume can initialize all schemas using the same migrator implementation;
-- Compose has a one-shot migrator or explicit developer migration command;
-- local `chat-service` uses `tropical_chat`;
-- runtime services remain free of startup DDL;
-- local README/commands reflect the new bootstrap lifecycle.
+- Compose uses a one-shot migrator;
+- runtime services wait for successful migration;
+- local chat owns `tropical_chat`;
+- local bootstrap stays free of runtime startup DDL.
 
-## P0.3 Workload resources and availability
+### P0.3 Resource/runtime guardrails - COMPLETE for active Tropical workloads
 
-Define per-service:
+- CPU/memory requests and limits;
+- Vault Agent request/limit envelope;
+- namespace `LimitRange`;
+- `runAsNonRoot` where applicable;
+- `allowPrivilegeEscalation: false`;
+- dropped Linux capabilities;
+- `RuntimeDefault` seccomp profile;
+- no HPA/PDB introduced before trustworthy metrics and replica strategy.
 
-- CPU/memory requests and limits based on observed baseline;
-- replica strategy;
-- rolling-update maxUnavailable/maxSurge;
-- PDB where replicas > 1;
-- anti-affinity/topology-spread where useful;
-- HPA only after requests and metrics are trustworthy.
+### P0.3.1 Traffic protection - COMPLETE
 
-Do not blindly set every service to multiple replicas. `chat-service` remains single replica until shared pub/sub exists.
+- API Gateway max in-flight requests;
+- dedicated SSE concurrency budget;
+- login account/global rate limiting;
+- bounded limiter memory;
+- chat global/per-user SSE connection caps;
+- 429/503 overload contracts and tests.
 
-## P0.4 Security and least privilege
+## Final security sprint - DEFERRED BY PRODUCT DECISION
+
+This work is intentionally paused while Release 1.1 Workforce & Shift Operations is validated. It remains a mandatory backlog, not a cancellation.
+
+### Toolchain and supply chain
+
+- upgrade Go from the current unsupported baseline to a supported release;
+- align Docker/Jenkins Go versions;
+- add `govulncheck`;
+- add filesystem/dependency and built-image vulnerability scanning;
+- pin CI tooling images rather than relying on floating `latest` tags.
+
+### Network and least privilege
 
 - separate runtime DB identities from migrator identity;
 - runtime users get only required DML;
 - migrator gets required DDL on owned schemas;
-- non-root/read-only-root-filesystem/securityContext where compatible;
-- NetworkPolicy for namespace ingress/egress boundaries;
-- review Kubernetes service accounts/RBAC;
-- secret rotation runbook;
-- image/dependency vulnerability scanning policy.
+- default-deny NetworkPolicy with explicit ingress/egress rules;
+- review Kubernetes service accounts/RBAC/token mounting;
+- secret rotation runbook.
+
+### Mandatory resume triggers
+
+Resume this sprint before any of the following:
+
+- external/public application exposure;
+- material increase in cluster scale or replicas;
+- new payment/finance integration;
+- third-party employee/payroll integration;
+- storage of more sensitive employee information;
+- production environment activation.
+
+## Active product milestone
+
+**Release 1.1 Workforce & Shift Operations** is the current product priority. See [`product-workforce-operations.md`](product-workforce-operations.md).
+
+The decision allows visible product progress while preserving the known platform debt explicitly in-repo.
 
 ## P1 Observability and operations
 
-- centralized structured application logs into ELK;
-- service/HTTP/DB metrics into Prometheus/Grafana or equivalent;
-- dashboards for latency/error/readiness/restarts/migration failures;
-- alerting with actionable thresholds;
-- OpenTelemetry traces/request correlation where it provides debugging value;
+- centralized structured logs into ELK;
+- HTTP/service/DB/workforce metrics into Prometheus/Grafana;
+- latency/error/readiness/restarts/migration/traffic-limit dashboards;
+- actionable alerts;
+- request correlation / OpenTelemetry where useful;
 - SLOs for critical user journeys.
 
 ## P1 Data/platform resilience
 
-- explicitly decide MySQL homelab RPO/RTO;
+- define homelab MySQL RPO/RTO;
 - automated backups and restore drill;
-- remove/mitigate single DB-host SPOF if higher availability is a goal;
-- test disk-full and DB-unavailable behavior;
+- test DB-unavailable and disk-full behavior;
 - ingress/TLS/cert lifecycle;
-- external exposure and firewall policy.
+- explicitly decide the acceptable MySQL SPOF.
 
-## P1 Chat horizontal scale
+## P1 Availability
 
-Introduce Redis/NATS or another shared pub/sub layer before `chat-service` replica count exceeds one. Add reconnect/load testing for SSE.
+- define replica strategy from observed load;
+- rolling-update maxUnavailable/maxSurge;
+- PDB only for workloads with >1 replica;
+- anti-affinity/topology spread where useful;
+- HPA only after requests and metrics are trustworthy;
+- chat remains single replica until shared pub/sub exists.
 
 ## Product/engineering governance
 
-For every milestone define:
-
-- user/business impact;
-- technical risk being reduced;
-- acceptance criteria;
-- verification evidence;
-- rollback path;
-- operational ownership.
-
-Avoid adding features that materially increase operational surface before the P0 reliability/security gaps are closed unless the feature is required for product validation.
+For every milestone define user impact, technical risk, acceptance criteria, verification evidence, rollback path and operational ownership. Product features may proceed now, but platform debt above must remain visible and must be resumed at the defined safety triggers.

@@ -27,6 +27,7 @@ Browser
                  +--> audit-service ------> tropical_audit
                  +--> inventory-service --> tropical_inventory
                  +--> sales-service ------> tropical_sales
+                 +--> workforce-service ---> tropical_workforce
                  +--> dashboard-service --> service HTTP APIs
                  `--> chat-service -------> tropical_chat
 ```
@@ -41,6 +42,7 @@ The API Gateway is the main application API boundary. Backend Kubernetes Service
 | audit | audits, issues/findings | users or inventory tables |
 | inventory | suppliers, items, movements | sales tables |
 | sales | sales entries | inventory tables |
+| workforce | shifts, attendance, time-off, shift checklist | auth/sales/inventory tables |
 | chat | chat history + real-time SSE broker | auth tables |
 | dashboard | aggregation | persistent business tables |
 | gateway | routing/authz boundary | business persistence |
@@ -56,6 +58,7 @@ auth-service       -> tropical_auth
 audit-service      -> tropical_audit
 inventory-service  -> tropical_inventory
 sales-service      -> tropical_sales
+workforce-service  -> tropical_workforce
 chat-service       -> tropical_chat
 ```
 
@@ -124,15 +127,25 @@ Jenkins can update desired image tags in GitOps. It should not use `kubectl appl
 
 The chat history is persistent in MySQL, but the SSE broker is process-local. Horizontal chat replicas would not share fan-out state. Keep one chat replica until shared pub/sub such as Redis or NATS is introduced.
 
-## 10. Current known gaps
+## 10. Role-aware product boundary
 
-The architecture is production-like, not production-complete. The next important gaps are:
+The product exposes three business personas while keeping legacy technical role codes for compatibility:
 
-- align fresh local Docker Compose bootstrap with the standalone migrator;
-- define requests/limits and availability policy per workload;
+- `staff` -> Karyawan: personal shift/self-service surface;
+- `auditor` -> PIC: operational manager surface;
+- `admin` -> Owner: full business and access-management surface.
+
+The API Gateway performs coarse route authorization. `workforce-service` additionally scopes row-level data using verified downstream identity headers, so personal workforce records are not selected by browser-supplied user IDs.
+
+## 11. Current known gaps
+
+The architecture is production-like, not production-complete. The final security sprint is intentionally deferred during Release 1.1 product validation. Remaining explicit gaps are:
+
+- upgrade the Go toolchain to a supported release and add supply-chain vulnerability gates;
 - split runtime DB users from migration DB user and reduce privileges;
-- add PodDisruptionBudgets and NetworkPolicies;
-- centralize structured logs/metrics/traces and alerting;
-- remove MySQL single-node SPOF or explicitly accept it for homelab;
+- add default-deny NetworkPolicies and complete service-account/RBAC review;
+- centralize metrics/alerts and run backup/restore drills;
+- define evidence-based replica/PDB/HPA strategy;
+- remove/accept MySQL single-node SPOF;
 - mature ingress/TLS and external exposure policy;
 - add shared pub/sub before chat horizontal scaling.

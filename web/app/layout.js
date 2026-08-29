@@ -9,8 +9,8 @@ import LiveChatProvider from "../components/LiveChatProvider";
 import FloatingChat from "../components/FloatingChat";
 
 export const metadata = {
-  title: "Tropical Management",
-  description: "Manajemen Restoran & Audit Internal",
+  title: "Tropical Steak House · Internal OS",
+  description: "Ruang kerja internal Tropical Steak House untuk people, shift, kualitas, stok, penjualan, dan koordinasi operasional.",
   manifest: "/manifest.webmanifest",
 };
 

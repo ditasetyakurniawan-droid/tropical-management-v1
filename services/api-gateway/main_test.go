@@ -66,8 +66,15 @@ func TestAllowedMatrix(t *testing.T) {
 	}{
 		{"admin", http.MethodDelete, "/api/users", true},
 		{"auditor", http.MethodGet, "/api/sales", true},
+		{"auditor", http.MethodGet, "/api/users", true},
+		{"staff", http.MethodGet, "/api/audits", false},
+		{"staff", http.MethodGet, "/api/workforce/summary", true},
+		{"staff", http.MethodPost, "/api/workforce/time-off", true},
 		{"auditor", http.MethodPatch, "/api/issues/1", true},
-		{"auditor", http.MethodPost, "/api/sales", false},
+		{"auditor", http.MethodPost, "/api/sales", true},
+		{"auditor", http.MethodPost, "/api/inventory/adjust", true},
+		{"auditor", http.MethodPost, "/api/inventory", false},
+		{"auditor", http.MethodPost, "/api/suppliers", false},
 		{"staff", http.MethodPost, "/api/sales", true},
 		{"staff", http.MethodPost, "/api/sales-report", false},
 		{"staff", http.MethodPost, "/api/chat/messages", true},
@@ -168,7 +175,7 @@ func TestGatewayReturns404ForPrefixLookalike(t *testing.T) {
 	defer upstream.Close()
 	g := &gateway{secret: secret, routes: []route{{prefix: "/api/sales", proxy: proxy(upstream.URL)}}}
 	req := httptest.NewRequest(http.MethodGet, "/api/sales-report", nil)
-	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("staff")))
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("admin")))
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -179,7 +186,7 @@ func TestGatewayReturns404ForPrefixLookalike(t *testing.T) {
 func TestGatewayRejectsForbiddenMutation(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	g := &gateway{secret: secret}
-	req := httptest.NewRequest(http.MethodPost, "/api/sales", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/inventory", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+signedToken(t, secret, validClaims("auditor")))
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)

@@ -117,15 +117,15 @@ export default function Users() {
           <div className="mt-5 space-y-3">
             <input className="input" placeholder="Nama lengkap" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <input className="input" placeholder="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            <input className="input" placeholder="Kata sandi - minimal 8 karakter" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <input className="input" placeholder="Kata sandi - minimal 12 karakter" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
             <select className="input" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option value="staff">Staf</option>
-              <option value="auditor">Auditor</option>
-              <option value="admin">Admin</option>
+              <option value="staff">Karyawan</option>
+              <option value="auditor">PIC</option>
+              <option value="admin">Owner</option>
             </select>
             <button className="btn w-full">Buat Pengguna</button>
           </div>
-          <div className="mt-6 rounded-2xl border border-amber-200/60 bg-amber-50/60 p-4 text-xs leading-6 text-amber-900"><strong>Model akses:</strong> Admin mengelola pengguna, Auditor menangani alur kepatuhan, dan Staf mencatat penjualan operasional. Hak baca tetap tersedia untuk peran yang sudah terautentikasi.</div>
+          <div className="mt-6 rounded-2xl border border-amber-200/60 bg-amber-50/60 p-4 text-xs leading-6 text-amber-900"><strong>Model akses:</strong> Owner mengelola akun dan melihat seluruh bisnis. PIC mengatur shift, approval, kualitas, stok, dan operasional. Karyawan hanya melihat ruang kerja pribadi, penjualan sesuai tugas, dan chat tim.</div>
         </form>
 
         <div className="card overflow-hidden">
@@ -140,7 +140,7 @@ export default function Users() {
                   <p className="mt-1 text-sm text-slate-500">{user.email}</p>
                 </div>
                 <select className="input" value={user.role} onChange={(e) => patchUser(user, { role: e.target.value })}>
-                  <option value="staff">Staf</option><option value="auditor">Auditor</option><option value="admin">Admin</option>
+                  <option value="staff">Karyawan</option><option value="auditor">PIC</option><option value="admin">Owner</option>
                 </select>
                 <button className={`btn ${user.active ? "btn-secondary" : ""}`} type="button" onClick={() => patchUser(user, { active: !user.active })}>{user.active ? "Nonaktifkan" : "Aktifkan"}</button>
               </div>

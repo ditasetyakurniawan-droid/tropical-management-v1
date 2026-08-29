@@ -17,16 +17,55 @@ All client traffic goes through `api-gateway:8080`.
 | GET | `/api/dashboard` | Sales/audit/inventory metrics |
 | GET/POST | `/api/chat/messages` | General room history / send message |
 | GET | `/api/chat/stream` | Authenticated real-time SSE stream |
+| GET/POST/PATCH | `/api/workforce/*` | Shift, attendance, time-off, and checklist operations |
 
 ## RBAC
 
 RBAC is enforced at the gateway and user administration is additionally enforced by `auth-service`.
 
-- **Admin**: all access.
-- **Auditor**: may mutate audit and issue endpoints.
-- **Staff**: may create/update sales data allowed by the gateway.
-- **All authenticated roles**: may read and send messages in General Live Chat.
-- Authenticated roles may read operational data.
+- **Owner (`admin`)**: full access, including user/role mutation.
+- **PIC (`auditor`)**: operational management for audit/issues and workforce, employee-directory reads needed for scheduling, operational sales entry, and inventory stock adjustments. PIC cannot mutate user accounts/roles, inventory master data, or supplier master data.
+- **Karyawan (`staff`)**: personal workforce/self-service, General Live Chat, authenticated identity access, and the existing sales workflow permitted by the gateway. Karyawan no longer receives blanket read access to audit/inventory/dashboard data.
+- Workforce service enforces identity-aware row scope in addition to gateway route authorization.
+
+
+## Workforce & Shift Operations
+
+All workforce endpoints require a valid JWT at the API Gateway. The gateway derives `X-User-ID`, `X-User-Name`, and `X-User-Role` from verified claims; clients cannot choose those downstream identity headers.
+
+| Method | Path | Karyawan | PIC | Owner | Purpose |
+|---|---|---:|---:|---:|---|
+| GET | `/api/workforce/summary` | personal | team | team | day-level workforce KPIs |
+| GET | `/api/workforce/shifts?from=&to=` | own | all | all | bounded shift window |
+| POST | `/api/workforce/shifts` | no | yes | yes | publish shift |
+| GET | `/api/workforce/attendance?from=&to=` | own | all | all | attendance history/pulse |
+| POST | `/api/workforce/attendance/clock-in` | yes | yes | yes | clock into today's scheduled shift |
+| POST | `/api/workforce/attendance/clock-out` | yes | yes | yes | close active attendance |
+| GET | `/api/workforce/time-off` | own | all | all | time-off requests |
+| POST | `/api/workforce/time-off` | yes | yes | yes | request leave/sick/permission |
+| PATCH | `/api/workforce/time-off` | no | yes | yes | approve/reject request |
+| GET | `/api/workforce/tasks?from=&to=` | team/assigned | all | all | shift checklist |
+| POST | `/api/workforce/tasks` | no | yes | yes | create checklist item |
+| PATCH | `/api/workforce/tasks` | assigned/team only | yes | yes | complete/reopen checklist |
+
+Date query ranges are limited to 31 days. Time-off requests are limited to 14 days per request. Stations are currently `kitchen`, `prep`, `service`, `cashier`, `beverage`, and `steward`.
+
+The current role codes remain `staff`, `auditor`, and `admin` for compatibility. Product labels are Karyawan, PIC, and Owner.
+
+### Operational mutation boundary
+
+To keep shift execution fast without giving the PIC ownership of reference data:
+
+| Operation | Karyawan | PIC | Owner |
+|---|---:|---:|---:|
+| Record sale | yes | yes | yes |
+| View inventory / suppliers | no | yes | yes |
+| Adjust stock movement | no | yes | yes |
+| Create inventory item | no | no | yes |
+| Create supplier | no | no | yes |
+| Mutate users / roles | no | no | yes |
+
+The UI follows the same boundary. PIC sees stock-adjustment controls but not inventory/supplier master forms. Backend gateway authorization remains the source of truth.
 
 ## Live Chat identity
 
