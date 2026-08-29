@@ -9,12 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ditasetyakurniawan-droid/tropical-management-v1/internal/httpx"
 	mysql "github.com/go-sql-driver/mysql"
 )
 
 func TestHealthzHandler(t *testing.T) {
 	w := httptest.NewRecorder()
-	healthzHandler(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	httpx.HealthHandler(serviceName)(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), serviceName) {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}

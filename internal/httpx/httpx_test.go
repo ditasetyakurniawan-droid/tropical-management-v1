@@ -433,3 +433,34 @@ func TestSetRetryAfter(t *testing.T) {
 		t.Fatalf("Retry-After=%q want 2", got)
 	}
 }
+
+func TestWriteErrorUsesStandardEnvelope(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteError(w, http.StatusTooManyRequests, "too many requests")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	if !strings.Contains(w.Body.String(), `"error":"too many requests"`) {
+		t.Fatalf("body=%q", w.Body.String())
+	}
+}
+
+func TestHealthHandlerAndRegistration(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterHealthRoutes(mux, "quality-service")
+
+	for path, wantStatus := range map[string]string{
+		"/healthz": `"status":"ok"`,
+		"/livez":   `"status":"alive"`,
+		"/readyz":  `"status":"ready"`,
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), wantStatus) || !strings.Contains(w.Body.String(), `"service":"quality-service"`) {
+			t.Fatalf("path=%s status=%d body=%q", path, w.Code, w.Body.String())
+		}
+	}
+}

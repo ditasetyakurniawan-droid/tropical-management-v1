@@ -134,12 +134,7 @@ type movement struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	dbConfig := dbx.RuntimeConfig()
 	db, err := dbx.OpenWithConfig(configx.Sensitive("INVENTORY_DB_DSN", defaultDSN), dbConfig)
@@ -151,9 +146,7 @@ func main() {
 	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
+	httpx.RegisterHealthRoutes(mux, serviceName, httpx.DBReadinessCheck("mysql", db))
 	mux.HandleFunc("/api/inventory", a.inventory)
 	mux.HandleFunc("/api/inventory/adjust", a.adjust)
 	mux.HandleFunc("/api/inventory/movements", a.movements)
@@ -165,14 +158,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 func (a *app) migrate() error {
@@ -202,7 +187,7 @@ func (a *app) inventory(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.createItem(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -242,7 +227,7 @@ func scanItems(rows *sql.Rows) ([]item, error) {
 func (a *app) createItem(w http.ResponseWriter, r *http.Request) {
 	var x item
 	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
@@ -251,14 +236,14 @@ func (a *app) createItem(w http.ResponseWriter, r *http.Request) {
 	x.Unit = strings.TrimSpace(x.Unit)
 
 	if errMsg := validateItem(x); errMsg != "" {
-		writeError(w, http.StatusBadRequest, errMsg)
+		httpx.WriteError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
 	id, err := a.insertItemWithMovement(r.Context(), x)
 	if err != nil {
 		if errors.Is(err, errSKUExistsSentinel) {
-			writeError(w, http.StatusConflict, errSKUExists)
+			httpx.WriteError(w, http.StatusConflict, errSKUExists)
 		} else {
 			httpx.InternalError(w, err)
 		}
@@ -320,7 +305,7 @@ func (a *app) insertItemWithMovement(parent context.Context, x item) (int64, err
 
 func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 
@@ -330,7 +315,7 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 		Reason string  `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(r, &in); err != nil || in.ItemID == 0 || in.Delta == 0 || strings.TrimSpace(in.Reason) == "" {
-		writeError(w, http.StatusBadRequest, errAdjustInvalid)
+		httpx.WriteError(w, http.StatusBadRequest, errAdjustInvalid)
 		return
 	}
 
@@ -338,9 +323,9 @@ func (a *app) adjust(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, errItemNotFoundSentinel):
-			writeError(w, http.StatusNotFound, errItemNotFound)
+			httpx.WriteError(w, http.StatusNotFound, errItemNotFound)
 		case errors.Is(err, errStockNegativeSentinel):
-			writeError(w, http.StatusBadRequest, errStockNegative)
+			httpx.WriteError(w, http.StatusBadRequest, errStockNegative)
 		default:
 			httpx.InternalError(w, err)
 		}
@@ -399,7 +384,7 @@ func (a *app) executeAdjustment(parent context.Context, itemID int64, delta floa
 
 func (a *app) movements(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 
@@ -445,7 +430,7 @@ func (a *app) suppliers(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.createSupplier(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -485,7 +470,7 @@ func scanSuppliers(rows *sql.Rows) ([]supplier, error) {
 func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 	var x supplier
 	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
@@ -494,7 +479,7 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 	x.Phone = strings.TrimSpace(x.Phone)
 
 	if x.Name == "" {
-		writeError(w, http.StatusBadRequest, errSupplierNameReq)
+		httpx.WriteError(w, http.StatusBadRequest, errSupplierNameReq)
 		return
 	}
 
@@ -522,7 +507,7 @@ func (a *app) createSupplier(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)

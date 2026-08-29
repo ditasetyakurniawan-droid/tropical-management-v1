@@ -40,6 +40,11 @@ func JSON(w http.ResponseWriter, status int, payload any) {
 	}
 }
 
+// WriteError writes the standard JSON error envelope used by all HTTP services.
+func WriteError(w http.ResponseWriter, status int, message string) {
+	JSON(w, status, map[string]string{"error": message})
+}
+
 // SetRetryAfter emits an RFC-compatible Retry-After delay in whole seconds.
 // Sub-second values are rounded up so clients never receive a zero-second retry.
 func SetRetryAfter(w http.ResponseWriter, delay time.Duration) {
@@ -56,7 +61,7 @@ func InternalError(w http.ResponseWriter, err error) {
 	if err != nil {
 		log.Printf("event=internal_error error=%q", err)
 	}
-	JSON(w, http.StatusInternalServerError, map[string]string{"error": internalErrorMsg})
+	WriteError(w, http.StatusInternalServerError, internalErrorMsg)
 }
 
 // DecodeJSON rejects unknown fields, payloads larger than 1 MiB, and trailing
@@ -196,6 +201,24 @@ func DBReadinessCheck(name string, db interface {
 			return db.PingContext(ctx)
 		},
 	}
+}
+
+// HealthHandler preserves the legacy /healthz compatibility contract.
+func HealthHandler(service string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		JSON(w, http.StatusOK, map[string]string{
+			"status":  "ok",
+			"service": service,
+		})
+	}
+}
+
+// RegisterHealthRoutes registers the shared compatibility, liveness, and
+// readiness endpoints. Dependency checks belong only to readiness.
+func RegisterHealthRoutes(mux *http.ServeMux, service string, checks ...ReadinessCheck) {
+	mux.HandleFunc("/healthz", HealthHandler(service))
+	mux.HandleFunc("/livez", LivenessHandler(service))
+	mux.HandleFunc("/readyz", ReadinessHandler(service, 0, checks...))
 }
 
 // LivenessHandler reports only process health. It intentionally does not check

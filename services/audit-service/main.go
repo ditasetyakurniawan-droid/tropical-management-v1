@@ -126,12 +126,7 @@ type issue struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	dbConfig := dbx.RuntimeConfig()
 	db, err := dbx.OpenWithConfig(configx.Sensitive("AUDIT_DB_DSN", defaultDSN), dbConfig)
@@ -143,9 +138,7 @@ func main() {
 	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
+	httpx.RegisterHealthRoutes(mux, serviceName, httpx.DBReadinessCheck("mysql", db))
 	mux.HandleFunc("/api/audits", a.audits)
 	mux.HandleFunc("/api/issues", a.issues)
 	mux.HandleFunc("/internal/summary", a.summary)
@@ -155,14 +148,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 func (a *app) migrate() error {
@@ -229,7 +214,7 @@ func (a *app) audits(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.createAudit(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -262,7 +247,7 @@ func (a *app) getAudits(w http.ResponseWriter, r *http.Request) {
 func (a *app) createAudit(w http.ResponseWriter, r *http.Request) {
 	var x audit
 	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
@@ -271,7 +256,7 @@ func (a *app) createAudit(w http.ResponseWriter, r *http.Request) {
 	x.Notes = strings.TrimSpace(x.Notes)
 
 	if errMsg := validateAudit(x); errMsg != "" {
-		writeError(w, http.StatusBadRequest, errMsg)
+		httpx.WriteError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
@@ -319,7 +304,7 @@ func (a *app) issues(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		a.updateIssue(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -352,7 +337,7 @@ func (a *app) getIssues(w http.ResponseWriter, r *http.Request) {
 func (a *app) createIssue(w http.ResponseWriter, r *http.Request) {
 	var x issue
 	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
@@ -363,7 +348,7 @@ func (a *app) createIssue(w http.ResponseWriter, r *http.Request) {
 	applyIssueDefaults(&x)
 
 	if errMsg := validateIssue(x); errMsg != "" {
-		writeError(w, http.StatusBadRequest, errMsg)
+		httpx.WriteError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
@@ -409,7 +394,7 @@ func validateIssue(x issue) string {
 func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 	var x issue
 	if err := httpx.DecodeJSON(r, &x); err != nil || x.ID == 0 {
-		writeError(w, http.StatusBadRequest, errIDAndJSONRequired)
+		httpx.WriteError(w, http.StatusBadRequest, errIDAndJSONRequired)
 		return
 	}
 
@@ -418,11 +403,11 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 	x.CorrectiveAction = strings.TrimSpace(x.CorrectiveAction)
 
 	if !validIssueStatus(x.Status) {
-		writeError(w, http.StatusBadRequest, errInvalidIssueStatus)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidIssueStatus)
 		return
 	}
 	if !validOptionalDate(x.DueDate) {
-		writeError(w, http.StatusBadRequest, errInvalidDueDate)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidDueDate)
 		return
 	}
 
@@ -449,7 +434,7 @@ func (a *app) updateIssue(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 	ctx, cancel := dbx.WithQueryTimeout(r.Context(), a.queryTimeout)

@@ -64,12 +64,7 @@ type sale struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	dbConfig := dbx.RuntimeConfig()
 	db, err := dbx.OpenWithConfig(configx.Sensitive("SALES_DB_DSN", defaultDSN), dbConfig)
@@ -81,9 +76,7 @@ func main() {
 	a := &app{db: db, queryTimeout: dbConfig.QueryTimeout}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0, httpx.DBReadinessCheck("mysql", db)))
+	httpx.RegisterHealthRoutes(mux, serviceName, httpx.DBReadinessCheck("mysql", db))
 	mux.HandleFunc("/api/sales", a.sales)
 	mux.HandleFunc("/internal/summary", a.summary)
 
@@ -92,18 +85,6 @@ func main() {
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"service": serviceName,
-	})
-}
-
-// writeError mengirimkan JSON error yang konsisten.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httpx.JSON(w, status, map[string]string{"error": msg})
 }
 
 func (a *app) migrate() error {
@@ -124,7 +105,7 @@ func (a *app) sales(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.createSale(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 	}
 }
 
@@ -164,12 +145,12 @@ func scanSales(rows *sql.Rows) ([]sale, error) {
 func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 	var x sale
 	if err := httpx.DecodeJSON(r, &x); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidJSON)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidJSON)
 		return
 	}
 
 	if !normalizeAndValidateSale(&x, time.Now()) {
-		writeError(w, http.StatusBadRequest, errInvalidSalesData)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidSalesData)
 		return
 	}
 
@@ -177,7 +158,7 @@ func (a *app) createSale(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := a.db.ExecContext(ctx, insertSaleQuery, x.BusinessDate, x.Orders, x.Revenue, x.Channel)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidSalesData)
+		httpx.WriteError(w, http.StatusBadRequest, errInvalidSalesData)
 		return
 	}
 
@@ -213,7 +194,7 @@ func normalizeAndValidateSale(x *sale, now time.Time) bool {
 
 func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
+		httpx.WriteError(w, http.StatusMethodNotAllowed, errMethodNotAllowed)
 		return
 	}
 	revenue, orders, err := a.getTodaySummary(r.Context())

@@ -35,12 +35,7 @@ type route struct {
 }
 
 func main() {
-	closeLog, logErr := logx.Configure(serviceName)
-	if logErr != nil {
-		log.Printf("event=log_config_error error=%q", logErr)
-	} else {
-		defer closeLog()
-	}
+	defer logx.ConfigureBestEffort(serviceName)()
 
 	g := &gateway{
 		secret:         []byte(configx.SensitiveSecret("JWT_SECRET", "local-dev-secret-change-this-value", 32)),
@@ -59,19 +54,13 @@ func main() {
 		{"/api/chat", proxy(httpx.Env("CHAT_SERVICE_URL", "http://chat-service:8080"))},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/livez", httpx.LivenessHandler(serviceName))
-	mux.HandleFunc("/readyz", httpx.ReadinessHandler(serviceName, 0))
+	httpx.RegisterHealthRoutes(mux, serviceName)
 	mux.Handle("/", g)
 	log.Println(serviceName + " listening on " + listenAddr)
 	server := httpx.NewServer(listenAddr, httpx.RequestLogger(serviceName, mux))
 	if err := httpx.RunServer(server, serviceName, 0); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": serviceName})
 }
 
 func proxy(raw string) *httputil.ReverseProxy {

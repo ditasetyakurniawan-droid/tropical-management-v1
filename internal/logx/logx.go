@@ -64,6 +64,22 @@ func Configure(service string) (func() error, error) {
 	return rotator.Close, nil
 }
 
+// ConfigureBestEffort configures file logging when available and keeps the
+// service on stdout/stderr when the optional file sink cannot be initialized.
+// Runtime startup must not fail solely because a log directory is unavailable.
+func ConfigureBestEffort(service string) func() {
+	closeLog, err := Configure(service)
+	if err != nil {
+		log.Printf("event=log_config_error service=%q error=%q", service, err)
+		return func() {}
+	}
+	return func() {
+		if err := closeLog(); err != nil {
+			log.Printf("event=log_close_error service=%q error=%q", service, err)
+		}
+	}
+}
+
 func sanitizeServiceName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
