@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 func TestHealthzHandler(t *testing.T) {
@@ -211,4 +213,170 @@ func TestInventoryDatabaseErrorsAreHandled(t *testing.T) {
 		t.Fatalf("summary error status=%d", w.Code)
 	}
 	script.assertDone(t)
+}
+
+func TestInsertItemWithMovementAdditionalBranches(t *testing.T) {
+	t.Run("zero stock skips initial movement", func(t *testing.T) {
+		db, script := openTestDB(t, execStep("INSERT INTO inventory_items", 12, 1))
+		a := &app{db: db}
+		id, err := a.insertItemWithMovement(item{SKU: "SKU-12", Name: "Empty", Unit: "pcs", Stock: 0})
+		if err != nil || id != 12 {
+			t.Fatalf("id=%d err=%v", id, err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("item insert error is returned", func(t *testing.T) {
+		boom := errors.New("insert failed")
+		db, script := openTestDB(t, execErrorStep("INSERT INTO inventory_items", boom))
+		a := &app{db: db}
+		if _, err := a.insertItemWithMovement(item{SKU: "SKU-13", Name: "Item", Unit: "pcs", Stock: 1}); !errors.Is(err, boom) {
+			t.Fatalf("expected insert error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("movement insert error is returned", func(t *testing.T) {
+		boom := errors.New("movement failed")
+		db, script := openTestDB(t,
+			execStep("INSERT INTO inventory_items", 14, 1),
+			execErrorStep("INSERT INTO stock_movements", boom),
+		)
+		a := &app{db: db}
+		if _, err := a.insertItemWithMovement(item{SKU: "SKU-14", Name: "Item", Unit: "pcs", Stock: 2}); !errors.Is(err, boom) {
+			t.Fatalf("expected movement error, got %v", err)
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestInventorySummaryRemainingBranches(t *testing.T) {
+	t.Run("rejects unsupported method", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{}).summary(w, httptest.NewRequest(http.MethodPost, "/internal/summary", nil))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("total count error", func(t *testing.T) {
+		boom := errors.New("total failed")
+		db, script := openTestDB(t,
+			queryStep("stock <= reorder_level", []string{"count"}, row(int64(2))),
+			queryErrorStep("SELECT COUNT(*) FROM inventory_items", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("stock sum error", func(t *testing.T) {
+		boom := errors.New("stock sum failed")
+		db, script := openTestDB(t,
+			queryStep("stock <= reorder_level", []string{"count"}, row(int64(2))),
+			queryStep("SELECT COUNT(*) FROM inventory_items", []string{"count"}, row(int64(7))),
+			queryErrorStep("SUM(stock)", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.summary(w, httptest.NewRequest(http.MethodGet, "/internal/summary", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestInventoryMutationDatabaseErrors(t *testing.T) {
+	t.Run("adjust query error", func(t *testing.T) {
+		boom := errors.New("stock lookup failed")
+		db, script := openTestDB(t, queryErrorStep("SELECT stock FROM inventory_items", boom))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.adjust(w, httptest.NewRequest(http.MethodPost, "/api/inventory/adjust", strings.NewReader(`{"item_id":1,"delta":1,"reason":"count"}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("adjust stock update error", func(t *testing.T) {
+		boom := errors.New("stock update failed")
+		db, script := openTestDB(t,
+			queryStep("SELECT stock FROM inventory_items", []string{"stock"}, row(float64(2))),
+			execErrorStep("UPDATE inventory_items SET stock", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.adjust(w, httptest.NewRequest(http.MethodPost, "/api/inventory/adjust", strings.NewReader(`{"item_id":1,"delta":1,"reason":"count"}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("adjust movement insert error", func(t *testing.T) {
+		boom := errors.New("movement insert failed")
+		db, script := openTestDB(t,
+			queryStep("SELECT stock FROM inventory_items", []string{"stock"}, row(float64(2))),
+			execStep("UPDATE inventory_items SET stock", 0, 1),
+			execErrorStep("INSERT INTO stock_movements", boom),
+		)
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.adjust(w, httptest.NewRequest(http.MethodPost, "/api/inventory/adjust", strings.NewReader(`{"item_id":1,"delta":1,"reason":" count "}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("create supplier database error", func(t *testing.T) {
+		boom := errors.New("supplier insert failed")
+		db, script := openTestDB(t, execErrorStep("INSERT INTO suppliers", boom))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.createSupplier(w, httptest.NewRequest(http.MethodPost, "/api/suppliers", strings.NewReader(`{"name":"Supplier C","contact":"Carol","phone":"0813"}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+}
+
+func TestCreateItemErrorResponses(t *testing.T) {
+	t.Run("invalid JSON", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{}).createItem(w, httptest.NewRequest(http.MethodPost, "/api/inventory", strings.NewReader(`{"sku":`)))
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), errInvalidJSON) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("duplicate SKU", func(t *testing.T) {
+		db, script := openTestDB(t, execErrorStep("INSERT INTO inventory_items", &mysql.MySQLError{Number: 1062, Message: "duplicate"}))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.createItem(w, httptest.NewRequest(http.MethodPost, "/api/inventory", strings.NewReader(`{"sku":"SKU-DUP","name":"Rice","unit":"kg","stock":1}`)))
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), errSKUExists) {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
+
+	t.Run("database failure", func(t *testing.T) {
+		boom := errors.New("insert unavailable")
+		db, script := openTestDB(t, execErrorStep("INSERT INTO inventory_items", boom))
+		a := &app{db: db}
+		w := httptest.NewRecorder()
+		a.createItem(w, httptest.NewRequest(http.MethodPost, "/api/inventory", strings.NewReader(`{"sku":"SKU-ERR","name":"Rice","unit":"kg","stock":1}`)))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		script.assertDone(t)
+	})
 }
