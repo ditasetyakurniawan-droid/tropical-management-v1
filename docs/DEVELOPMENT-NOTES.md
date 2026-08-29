@@ -1,158 +1,121 @@
 # Tropical Management - Development Notes / Cheat Sheet
 
-Use this file as the short daily reference while coding.
-
-## Local URLs
+## Current baseline
 
 ```text
-Web          http://localhost:3000
-API Gateway  http://localhost:8080
-Live Chat    http://localhost:3000/chat
+P0.1 Runtime reliability       COMPLETE
+P0.2 DB migration separation  COMPLETE on Kubernetes / E2E validated
+P0.2.1 Local Compose parity    OPEN
 ```
 
-Only ports 3000 and 8080 are published to the host. Backend services and MySQL are internal to Docker Compose.
-
-## Services
+## Service ownership
 
 ```text
-auth-service        users, login, JWT, RBAC
-audit-service       audits, findings, corrective action
-inventory-service   items, suppliers, stock movements
-sales-service       daily sales
-dashboard-service   HTTP aggregation
-chat-service        persistent General Live Chat + SSE
-api-gateway         JWT validation, RBAC, reverse proxy
-web                 Next.js PWA
+auth-service        -> tropical_auth
+audit-service       -> tropical_audit
+inventory-service   -> tropical_inventory
+sales-service       -> tropical_sales
+chat-service        -> tropical_chat
+dashboard-service   -> no owned DB
+api-gateway         -> no owned DB
 ```
 
-## Start / stop
+Never point two service migration targets at the same schema.
 
-```bash
-docker compose up -d --build
-docker compose ps
-docker compose down
-```
-
-## Logs
-
-```bash
-docker compose logs -f <service>
-docker compose logs --tail=100 <service>
-```
-
-## Rebuild only what changed
-
-```bash
-# frontend
-docker compose build web && docker compose up -d web
-
-# backend example
-docker compose build audit-service && docker compose up -d audit-service
-
-# live-chat related
-docker compose build chat-service api-gateway web
-docker compose up -d chat-service api-gateway web
-```
-
-## Health
-
-```bash
-curl -fsS http://localhost:8080/healthz
-```
-
-Internal service example:
-
-```bash
-docker run --rm \
-  --network tropical-management-v1_default \
-  curlimages/curl:8.10.1 \
-  http://chat-service:8080/healthz
-```
-
-## Backend quality
-
-```bash
-go test ./...
-go vet ./...
-```
-
-## Frontend quality
-
-```bash
-cd web
-npm install
-npm run build
-```
-
-## Database ownership target
+## Runtime health
 
 ```text
-auth-service       tropical_auth
-audit-service      tropical_audit
-inventory-service  tropical_inventory
-sales-service      tropical_sales
-chat-service       tropical_chat (production target)
+/healthz  compatibility
+/livez    process liveness only
+/readyz   traffic readiness; DB-backed services check MySQL
 ```
 
-## Add a feature
+Kubernetes backend contract:
 
-1. Decide which service owns it.
-2. Add backend business rule + validation.
+```text
+startup    /livez
+readiness  /readyz
+liveness   /livez
+terminationGracePeriodSeconds = 30
+```
+
+## Quality before PR
+
+```bash
+make fmt-check
+make test
+make vet
+git diff --check
+```
+
+## Daily feature workflow
+
+1. Decide service/domain owner.
+2. Update business logic and validation.
 3. Add tests.
-4. Add/update API Gateway route/RBAC if needed.
-5. Add frontend.
-6. Update docs.
-7. Build only impacted services first.
-8. Run full acceptance before PR.
+4. If schema changes, add a new versioned migration. Never edit an applied one.
+5. Update gateway route/RBAC if needed.
+6. Update frontend.
+7. Update docs/acceptance criteria.
+8. Run focused tests, then full quality gates.
+9. PR -> Jenkins -> Sonar -> Harbor -> GitOps -> Argo CD.
+10. Verify migrator, rollout health, and restarts after merge.
 
-## Add a microservice
+## Add a database migration
 
-1. `services/<service>/main.go`
-2. Define owned DB and API prefix.
-3. Add Docker Compose service.
-4. Add API Gateway route.
-5. Add Jenkins image build/push list.
-6. Add GitOps runtime config/workload later.
-7. Add docs/tests.
+See [`database-migrations.md`](database-migrations.md).
 
-## Security rules
+Short version:
 
-- Never commit password/token/private key/kubeconfig.
-- Frontend UI hiding is not authorization.
-- Gateway/service must enforce access.
-- One service must not directly query another service's database.
-- Production secrets come from Vault.
-- Production images should use immutable Git SHA tags.
+```text
+internal/migrate/sql/<target>/NNNNNN_description.sql
+```
+
+One migration version is immutable after it has been applied. A checksum mismatch is a deliberate release blocker.
+
+## Release watch
+
+```bash
+kubectl -n test-app get jobs -w
+kubectl -n test-app get pods -w
+kubectl -n argocd get application tropical-management
+```
+
+A healthy DB-changing deployment should show:
+
+```text
+PreSync db-migrator -> Complete 1/1
+then application rollout
+then all expected pods Running with restart count stable
+```
+
+## Secrets
+
+Kubernetes secrets come from Vault. Do not commit passwords, tokens, private keys, kubeconfig, Harbor credentials, or plaintext Kubernetes Secrets.
+
+Migration Job credentials are injected as files. Runtime and migration DB credentials are still a hardening target for separation/least privilege.
+
+## Local development warning
+
+Fresh Docker Compose bootstrap is not yet fully aligned with P0.2. Do not reintroduce service-startup DDL to fix it. Add a one-shot Compose migrator and point local chat at `tropical_chat` as P0.2.1.
 
 ## Live Chat
 
-- All authenticated Admin/Auditor/Staff users can chat.
-- Browser sends only message body.
-- Gateway injects trusted user ID/name/role.
-- SSE stream: `/api/chat/stream`.
-- Until Redis/NATS shared pub/sub exists, keep chat-service at one Kubernetes replica.
+Chat history is MySQL-backed. SSE fan-out is in-memory. Keep one Kubernetes chat replica until Redis/NATS or another shared pub/sub is implemented.
 
 ## Git workflow
 
 ```text
-main
-  -> feature/<name>
-  -> local test
-  -> push
-  -> PR
-  -> review
-  -> merge
+main -> feature/fix/docs branch -> local quality -> PR -> review -> merge
 ```
 
-## Next priority
+Normal post-merge deployment must be automated. Avoid manual Argo CD sync/restart unless diagnosing an exceptional condition.
 
-```text
-1. Vault *_FILE support
-2. Per-service DB credentials
-3. Jenkins -> Harbor immutable images
-4. Jenkins -> GitOps tag update
-5. Kubernetes Deployments/Services
-6. Argo CD sync
-7. NetworkPolicy/HPA/PDB/Ingress
-8. Observability
-```
+## Next priorities
+
+1. P0.2.1 fresh Compose migrator parity.
+2. P0.3 workload requests/limits + replica/PDB strategy.
+3. P0.4 runtime/migrator DB-user split + securityContext + NetworkPolicy.
+4. P1 centralized logs/metrics/traces + alerting.
+5. P1 DB resilience and ingress/TLS maturity.
+6. Redis/NATS before multi-replica chat.
