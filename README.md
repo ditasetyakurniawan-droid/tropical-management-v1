@@ -151,3 +151,10 @@ The current SSE broker is in-memory. MySQL persists history, but live fan-out be
 - P1 observability, DB resilience, evidence-based HA: **planned**.
 
 See [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md) and [`docs/product-workforce-operations.md`](docs/product-workforce-operations.md).
+
+## Development Tracking
+
+Current engineering and release status:
+
+- [Development Tracker](docs/DEVELOPMENT_TRACKER.md)
+- [Workforce Operations](docs/product-workforce-operations.md)
