@@ -1,167 +1,152 @@
 # Tropical Management V1
 
-**Tropical Management** is a restaurant operations and internal-audit platform built as independently deployable Go microservices with a Next.js PWA frontend. The current product milestone includes functional hardening, a luxury tropical UI, and General Live Chat.
+Tropical Management is a restaurant operations and internal-audit platform built as independently deployable Go microservices with a Next.js PWA frontend. This repository owns application code, tests, Docker build definitions, versioned database migrations, and the Jenkins CI pipeline.
 
-## Current architecture
+> Current engineering baseline: P0.1 runtime reliability and P0.2 delivery-owned database migrations are validated end-to-end in the `test-app` Kubernetes environment.
+
+## System architecture
 
 ```text
 Browser / PWA
       |
       v
-Next.js Web :3000
+Next.js Web
       |
       v
-API Gateway :8080
+API Gateway
       |
-      +-- auth-service
-      +-- audit-service
-      +-- inventory-service
-      +-- sales-service
-      +-- dashboard-service
-      +-- chat-service
-             |
-             +-- persistent history
-             +-- real-time SSE
+      +-- auth-service ---------> tropical_auth
+      +-- audit-service --------> tropical_audit
+      +-- inventory-service ----> tropical_inventory
+      +-- sales-service --------> tropical_sales
+      +-- dashboard-service ----> HTTP aggregation only
+      +-- chat-service ---------> tropical_chat
 
-Backend services -> MySQL
+MySQL: DB-dt / 192.168.100.70
+Runtime secrets: HashiCorp Vault
 ```
 
-A microservice is defined here by independent runtime/API/data/deployment boundaries. The application stays in one source monorepo until independent team ownership or release cadence justifies splitting repositories.
-
-## Implemented modules
-
-- Interactive dashboard: Sales, Audit Score, Open Findings, Inventory Alerts
-- Internal Audit: checklist, score, finding workflow, PIC, due date, corrective action
-- Inventory: stock, reorder alerts, suppliers, stock movement ledger
-- Sales: operational daily sales entries
-- Users/RBAC: Admin, Auditor, Staff; role editing and activate/deactivate
-- General Live Chat: authenticated users, role badges, per-user accent colors, persistent messages, real-time SSE
-- Responsive luxury tropical UI/PWA foundation
-
-## Run locally
-
-Prerequisite: Docker + Docker Compose v2.
-
-```bash
-git clone https://github.com/ditasetyakurniawan-droid/tropical-management-v1.git
-cd tropical-management-v1
-docker compose up -d --build
-docker compose ps
-curl -fsS http://localhost:8080/healthz
-```
-
-Open:
-
-```text
-Web        http://localhost:3000
-Live Chat  http://localhost:3000/chat
-API        http://localhost:8080
-```
-
-Development-only bootstrap account:
-
-```text
-admin@tropical.local
-ChangeThis123!
-```
-
-Do not reuse local development credentials in production.
+The application remains a source monorepo. A service boundary is defined by runtime, API, data ownership, and deployable image, not by repository count.
 
 ## Service catalog
 
-| Runtime | Responsibility |
-|---|---|
-| `auth-service` | Login, JWT, users, RBAC |
-| `audit-service` | Audit checklist, findings, corrective-action workflow |
-| `inventory-service` | Items, suppliers, stock, stock movements |
-| `sales-service` | Daily operational sales |
-| `dashboard-service` | Cross-service HTTP aggregation |
-| `chat-service` | General room, MySQL history, SSE real-time delivery |
-| `api-gateway` | Single API entry point, JWT validation, RBAC, reverse proxy |
-| `web` | Next.js PWA frontend |
+| Runtime | Responsibility | Persistent store |
+|---|---|---|
+| `auth-service` | Login, JWT, users, RBAC | `tropical_auth` |
+| `audit-service` | Audit checklist, findings, corrective-action workflow | `tropical_audit` |
+| `inventory-service` | Items, suppliers, stock, stock movements | `tropical_inventory` |
+| `sales-service` | Daily operational sales | `tropical_sales` |
+| `dashboard-service` | Cross-service HTTP aggregation | none |
+| `chat-service` | General room, MySQL history, SSE real-time delivery | `tropical_chat` |
+| `api-gateway` | API entry point, JWT validation, RBAC, reverse proxy | none |
+| `web` | Next.js PWA frontend | none |
+| `db-migrator` | Versioned schema changes before deployment | all owned schemas |
 
-## Developer documentation
+## Production-like delivery path
 
-Start here when continuing development:
-
-- [`docs/DEVELOPMENT-NOTES.md`](docs/DEVELOPMENT-NOTES.md) - short daily cheat sheet
-- [`docs/architecture.md`](docs/architecture.md) - architecture boundaries
-- [`docs/api.md`](docs/api.md) - API surface
-- [`docs/live-chat.md`](docs/live-chat.md) - General Live Chat design and acceptance
-- [`docs/local-development.md`](docs/local-development.md) - local Docker workflow
-- [`docs/cicd-gitops.md`](docs/cicd-gitops.md) - Jenkins/GitOps direction
-- [`docs/phase3-functional-hardening.md`](docs/phase3-functional-hardening.md) - Phase 3 acceptance notes
-- [`docs/observability-and-testing.md`](docs/observability-and-testing.md) - file logging, request tracing, tests, and Sonar coverage
-- [`docs/coverage-policy.md`](docs/coverage-policy.md) - coverage gates, exclusions, and Clean as You Code policy
-- [`docs/engineering-review.md`](docs/engineering-review.md) - remediation summary and residual risks
-
-## Development commands
-
-```bash
-# Full local quality verification
-./scripts/verify-local.sh
-
-# Or focused backend commands
-make coverage
-make vet
-
-# Frontend (clean, lockfile-reproducible install)
-cd web && npm ci && npm run build
-
-# Rebuild one backend service
-docker compose build audit-service && docker compose up -d audit-service
-
-# Rebuild frontend
-docker compose build web && docker compose up -d web
-
-# Logs (stdout)
-docker compose logs -f api-gateway
-
-# Copy the rotating gateway log file from the container
-mkdir -p logs
-docker cp "$(docker compose ps -q api-gateway):/var/log/tropical/api-gateway.log" ./logs/api-gateway.log
+```text
+GitHub application main
+        |
+        v
+      Jenkins
+ test -> vet -> Sonar -> build
+        |
+        v
+ Harbor immutable images
+        |
+        v
+GitOps image-tag commit
+        |
+        v
+      Argo CD
+        |
+        +--> PreSync: tropical-db-migrator
+        |         |
+        |         +--> Vault-injected DB DSNs
+        |         +--> schema_migrations/checksum/dirty/lock
+        |         `--> failure stops the release
+        |
+        `--> Kubernetes Deployment rollout
 ```
 
-Backend service ports are intentionally not published to the host. Test internal health through the Compose network when necessary.
+Jenkins does not apply Kubernetes manifests directly. The GitOps repository is the deployment source of truth and Argo CD performs reconciliation.
+
+## Runtime health contract
+
+All Go backends expose:
+
+- `GET /healthz`: compatibility health endpoint.
+- `GET /livez`: process liveness only. External dependency failure must not create restart loops.
+- `GET /readyz`: traffic readiness. DB-backed services perform bounded MySQL readiness checks.
+
+Kubernetes uses startup `/livez`, readiness `/readyz`, liveness `/livez`, and `terminationGracePeriodSeconds: 30`. The shared server lifecycle handles SIGINT/SIGTERM and gives in-flight HTTP requests a 20-second graceful shutdown budget.
+
+See [`docs/architecture.md`](docs/architecture.md) and [`docs/production-readiness-p0-health.md`](docs/production-readiness-p0-health.md).
+
+## Database migration contract
+
+Schema ownership is no longer part of normal service startup in the Kubernetes delivery path.
+
+- Migrations are versioned under `internal/migrate/sql/<target>/`.
+- `services/db-migrator` executes the five DB targets before application rollout.
+- `schema_migrations` records version, migration name, SHA-256 checksum, dirty state, start time, and applied time.
+- Applied migration files are immutable. A checksum mismatch fails closed.
+- Dirty migrations fail closed.
+- MySQL advisory locks prevent concurrent migrators for the same target.
+- Argo CD runs the migrator as a `PreSync` Job.
+- Vault Agent renders DB DSNs as files for the migration Job.
+
+See [`docs/database-migrations.md`](docs/database-migrations.md).
 
 ## Repository split
 
-- `tropical-management-v1` - application code, Docker build definitions, tests, Jenkins pipeline
-- `tropical-management-gitops` - Kubernetes desired state, Kustomize overlays, Argo CD definitions
+- `tropical-management-v1`: application code, tests, Dockerfiles, migrations, Jenkins pipeline.
+- `tropical-management-gitops`: Kubernetes desired state, Kustomize overlays, Vault injection, Argo CD hooks/applications.
 
-Production delivery target:
+## Developer documentation
 
-```text
-GitHub -> Jenkins -> Harbor -> GitOps commit -> Argo CD -> Kubernetes
+Start here:
+
+- [`docs/DEVELOPMENT-NOTES.md`](docs/DEVELOPMENT-NOTES.md): daily workflow and quick checks.
+- [`docs/architecture.md`](docs/architecture.md): boundaries, ownership, runtime lifecycle.
+- [`docs/database-migrations.md`](docs/database-migrations.md): migration authoring and recovery rules.
+- [`docs/cicd-gitops.md`](docs/cicd-gitops.md): CI/CD and release lifecycle.
+- [`docs/api.md`](docs/api.md): API surface.
+- [`docs/live-chat.md`](docs/live-chat.md): live chat design and constraints.
+- [`docs/observability-and-testing.md`](docs/observability-and-testing.md): logs, request tracing, tests, Sonar.
+- [`docs/coverage-policy.md`](docs/coverage-policy.md): quality-gate policy.
+- [`docs/engineering-review.md`](docs/engineering-review.md): engineering review and residual risks.
+- [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md): prioritized hardening roadmap.
+
+## Quality gates
+
+```bash
+make fmt-check
+make test
+make vet
 ```
 
-Jenkins should not directly apply production manifests.
+`make test` is expected to run race-enabled Go tests. Jenkins also runs frontend build and Sonar Quality Gate before publishing images.
 
-## Database target
+## Local development
 
-Production MySQL is external. Target database ownership:
+Docker Compose remains useful for developer feedback, but after P0.2 the local path must be kept aligned with the Kubernetes migration lifecycle.
 
-```text
-auth-service       -> tropical_auth
-audit-service      -> tropical_audit
-inventory-service  -> tropical_inventory
-sales-service      -> tropical_sales
-chat-service       -> tropical_chat
-```
+Known follow-up: a fresh Compose volume currently needs a one-shot `db-migrator` path, and local `CHAT_DB_DSN` must point to `tropical_chat`. Track this as P0.2.1 before treating fresh local bootstrap as equivalent to cluster bootstrap.
 
-Production credentials must be scoped per service and injected from Vault.
+Do not solve that by re-enabling schema migration inside runtime service startup.
 
-## Important Live Chat scaling note
+## Live Chat scaling constraint
 
-The current SSE broker is in-memory. Message history is persisted in MySQL, but live fan-out between multiple chat-service replicas requires shared pub/sub such as Redis or NATS. Until that hardening is implemented, deploy `chat-service` with one replica.
+The current SSE broker is in-memory. MySQL persists history, but live fan-out between multiple `chat-service` replicas requires Redis, NATS, or equivalent shared pub/sub. Keep chat at one replica until that is implemented.
 
-## Next technical milestone
+## Current engineering status
 
-1. Add MySQL-backed integration tests with ephemeral databases.
-2. Add frontend unit/component tests and LCOV ingestion into Sonar.
-3. Inject database/JWT secrets from Vault and rotate production credentials.
-4. Add OpenTelemetry plus centralized log aggregation for production.
-5. Replace chat in-memory live fan-out with Redis or NATS before horizontal scaling.
-6. Complete Kubernetes ingress/network policy/HPA/PDB hardening in the GitOps repository.
+- P0.1 runtime health + graceful shutdown: **complete and rollout-validated**.
+- P0.2 versioned delivery-owned DB migration: **complete and E2E validated in Kubernetes**.
+- P0.2.1 local Compose migration alignment: **next cleanup**.
+- P0.3 Kubernetes resource/availability hardening: **next platform milestone**.
+- P0.4 least privilege + workload/network security: **planned**.
+- P1 observability, DB resilience, TLS/ingress maturity: **planned**.
 
-See [`docs/engineering-review.md`](docs/engineering-review.md) for the current remediation status and residual risks.
+See [`docs/production-readiness-roadmap.md`](docs/production-readiness-roadmap.md).
