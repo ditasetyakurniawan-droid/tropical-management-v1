@@ -150,7 +150,8 @@ pipeline {
                         'sales-service'     : 'tropical-sales',
                         'chat-service'      : 'tropical-chat',
                         'dashboard-service' : 'tropical-dashboard',
-                        'api-gateway'       : 'tropical-api-gateway'
+                        'api-gateway'       : 'tropical-api-gateway',
+                        'db-migrator'       : 'tropical-db-migrator'
                     ]
 
                     services.each { service, image ->
@@ -212,6 +213,7 @@ pipeline {
                           tropical-chat \
                           tropical-dashboard \
                           tropical-api-gateway \
+                          tropical-db-migrator \
                           tropical-web
                         do
                             docker push "$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE:$IMAGE_TAG"
